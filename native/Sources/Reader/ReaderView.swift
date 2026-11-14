@@ -8,6 +8,9 @@ final class ReaderControls {
     fileprivate weak var canvas: ReaderCanvas?
     var page = 0
     var pageCount = 0
+    /// Single-key toggles as in the web reader (W, C), set by the book page.
+    var toggleWordPanel: (() -> Void)?
+    var toggleChapters: (() -> Void)?
 
     func next() { canvas?.nextSpread() }
     func previous() { canvas?.previousSpread() }
@@ -91,7 +94,7 @@ struct ReaderView: NSViewRepresentable {
             let w = p.words[wordIndex]
             let surface = (p.text as NSString).substring(with: NSRange(location: w.start, length: w.len))
             parent.word.select(
-                WordRef(bookId: parent.book.bookId, paragraphId: paragraphId, sentence: w.s, word: w.w, flatIndex: w.f),
+                WordRef(bookId: parent.book.bookId, paragraphId: paragraphId, sentence: w.sentence, word: w.word, flatIndex: w.flatIndex),
                 surface: surface)
         }
 
@@ -119,6 +122,15 @@ struct ReaderView: NSViewRepresentable {
             }
         }
 
+        func readerToggle(_ canvas: ReaderCanvas, key: String) -> Bool {
+            switch key {
+            case "w": parent?.controls.toggleWordPanel?()
+            case "c": parent?.controls.toggleChapters?()
+            default: return false
+            }
+            return true
+        }
+
         func readerTranslationProgress(_ canvas: ReaderCanvas, paragraphId: Int) -> Double? {
             guard let parent, let a = parent.activity.activity(parent.book.bookId, paragraphId) else { return nil }
             return a.expectedChars > 0 ? Double(a.progressChars) / Double(a.expectedChars) : 0
@@ -129,14 +141,22 @@ struct ReaderView: NSViewRepresentable {
 /// The exact top line of the last position this device saved, next to the
 /// synced (paragraph, pageOffset), which cannot express a line.
 struct LocalPosition: Codable {
-    let state: BookReadingState
+    let chapterId: Int
+    let anchorParagraph: Int
+    let pageOffset: Int
     let paragraphId: Int
     let start: Int
 
     init(state: BookReadingState, line: LineAnchor) {
-        self.state = state
+        chapterId = state.chapterId
+        anchorParagraph = state.paragraphId
+        pageOffset = state.pageOffset
         paragraphId = line.paragraphId
         start = line.start
+    }
+
+    var state: BookReadingState {
+        BookReadingState(chapterId: chapterId, paragraphId: anchorParagraph, pageOffset: pageOffset)
     }
 
     var line: LineAnchor { LineAnchor(paragraphId: paragraphId, start: start) }

@@ -19,15 +19,15 @@ final class SyncStore: CoreBound {
 
     func attach(_ core: any CoreService) {
         self.core = core
-        events.on("sync_status_changed") { [weak self] _ in
-            Task { await self?.refresh() }
+        events.on { [weak self] event in
+            if case .syncStatusChanged = event { Task { await self?.refresh() } }
         }
         Task { await refresh() }
     }
 
     func refresh() async {
         guard let core else { return }
-        if let status: SyncStatus = try? await core.invoke("get_sync_status") {
+        if let status = try? await core.getSyncStatus() {
             self.status = status
         }
     }
@@ -35,50 +35,50 @@ final class SyncStore: CoreBound {
     /// Device lists only matter while the sync settings are on screen.
     func refreshDevices() async {
         guard let core else { return }
-        thisDevice = (try? await core.invoke("sync_get_this_device", as: ThisDevice?.self)) ?? nil
-        devices = (try? await core.invoke("sync_list_devices")) ?? []
-        pending = (try? await core.invoke("sync_list_pending")) ?? []
+        thisDevice = (try? await core.syncThisDevice()) ?? nil
+        devices = (try? await core.syncListDevices()) ?? []
+        pending = (try? await core.syncListPending()) ?? []
     }
 
     func wake() {
         guard let core else { return }
-        Task { try? await core.call("sync_wake") }
+        Task { try? await core.syncWake() }
     }
 
     func setEnabled(_ enabled: Bool) async {
-        await run("sync_set_enabled", ["enabled": .bool(enabled)])
+        await run { try await $0.syncSetEnabled(enabled: enabled) }
     }
 
     func setDeviceName(_ name: String) async {
-        await run("sync_set_device_name", ["name": .string(name)])
+        await run { try await $0.syncSetDeviceName(name: name) }
     }
 
     func add(deviceId: String, name: String) async {
-        await run("sync_add_device", ["deviceId": .string(deviceId), "name": .string(name)])
+        await run { try await $0.syncAddDevice(deviceId: deviceId, name: name) }
     }
 
     func remove(deviceId: String) async {
-        await run("sync_remove_device", ["deviceId": .string(deviceId)])
+        await run { try await $0.syncRemoveDevice(deviceId: deviceId) }
     }
 
     func resetIdentity() async {
-        await run("sync_reset_identity")
+        await run { try await $0.syncResetIdentity() }
     }
 
     func keepIdentity() async {
-        await run("sync_keep_identity")
+        await run { try await $0.syncKeepIdentity() }
     }
 
     func webUIURL() async -> URL? {
         guard let core else { return nil }
-        let raw = (try? await core.invoke("sync_web_ui_url", as: String?.self)) ?? nil
+        let raw = (try? await core.syncWebUiUrl()) ?? nil
         return raw.flatMap(URL.init(string:))
     }
 
-    private func run(_ cmd: String, _ args: [String: JSONValue] = [:]) async {
+    private func run(_ action: (any CoreService) async throws -> Void) async {
         guard let core else { return }
         do {
-            try await core.call(cmd, args)
+            try await action(core)
             error = nil
         } catch {
             self.error = error.localizedDescription
@@ -121,15 +121,15 @@ final class AnkiStore: CoreBound {
 
     func attach(_ core: any CoreService) {
         self.core = core
-        events.on("anki_sync_status_changed") { [weak self] _ in
-            Task { await self?.refresh() }
+        events.on { [weak self] event in
+            if case .ankiSyncStatusChanged = event { Task { await self?.refresh() } }
         }
         Task { await refresh() }
     }
 
     func refresh() async {
         guard let core else { return }
-        if let status: AnkiSyncStatus = try? await core.invoke("get_anki_sync_status") {
+        if let status = try? await core.getAnkiSyncStatus() {
             self.status = status
         }
     }
@@ -137,7 +137,7 @@ final class AnkiStore: CoreBound {
     func syncNow() async {
         guard let core else { return }
         do {
-            try await core.call("sync_anki_now")
+            try await core.syncAnkiNow()
             error = nil
         } catch {
             self.error = error.localizedDescription

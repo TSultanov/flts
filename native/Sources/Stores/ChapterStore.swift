@@ -35,19 +35,17 @@ final class ChapterStore {
         self.core = core
         self.events = events
         tokens.append(
-            events.on("paragraph_updated", as: ParagraphUpdatedEvent.self) { [weak self] e in
-                guard let self, e.bookId == bookId else { return }
-                self.refetch([e.paragraphId])
-            })
-        tokens.append(
-            events.on("cards_updated") { [weak self] _ in
+            events.on { [weak self] event in
                 guard let self else { return }
-                self.refetch(self.paragraphIds)
-            })
-        tokens.append(
-            events.on("book_updated", as: UUID.self) { [weak self] id in
-                guard let self, id == bookId else { return }
-                Task { await self.reloadIds() }
+                switch event {
+                case .paragraphUpdated(let e) where e.bookId == bookId:
+                    refetch([e.paragraphId])
+                case .cardsUpdated:
+                    refetch(paragraphIds)
+                case .bookUpdated(let id) where id == bookId:
+                    Task { await self.reloadIds() }
+                default: break
+                }
             })
     }
 
@@ -58,8 +56,7 @@ final class ChapterStore {
 
     func load() async {
         do {
-            paragraphIds = try await core.invoke(
-                "get_book_chapter_paragraph_ids", ["bookId": .uuid(bookId), "chapterId": .int(chapterId)])
+            paragraphIds = try await core.getBookChapterParagraphIds(bookId: bookId, chapterId: chapterId)
             let fetched = try await fetch(paragraphIds)
             paragraphs = Dictionary(uniqueKeysWithValues: fetched.map { ($0.id, $0) })
             loaded = true
@@ -72,9 +69,9 @@ final class ChapterStore {
     }
 
     private func reloadIds() async {
-        guard let ids: [Int] = try? await core.invoke(
-            "get_book_chapter_paragraph_ids", ["bookId": .uuid(bookId), "chapterId": .int(chapterId)])
-        else { return }
+        guard let ids = try? await core.getBookChapterParagraphIds(bookId: bookId, chapterId: chapterId) else {
+            return
+        }
         // Same ids: text changes arrive as `paragraph_updated`, and the queue
         // emits `book_updated` on every save, so refetching here would storm.
         if ids != paragraphIds {
@@ -88,8 +85,7 @@ final class ChapterStore {
         var start = 0
         while start < ids.count {
             let slice = Array(ids[start..<min(start + Self.batchSize, ids.count)])
-            let batch: ParagraphTexts = try await core.invoke(
-                "get_paragraph_texts_batch", ["bookId": .uuid(bookId), "paragraphIds": .ints(slice)])
+            let batch = try await core.getParagraphTexts(bookId: bookId, paragraphIds: slice)
             if language == nil, !batch.language.isEmpty {
                 language = Locale.Language(identifier: batch.language).minimalIdentifier
             }
@@ -130,12 +126,8 @@ final class ChapterStore {
 
     func translate(paragraphId: Int, model: String, useCache: Bool = true) async {
         do {
-            try await core.call(
-                "translate_paragraph",
-                [
-                    "bookId": .uuid(bookId), "paragraphId": .int(paragraphId), "model": .string(model),
-                    "useCache": .bool(useCache),
-                ])
+            try await core.translateParagraph(
+                bookId: bookId, paragraphId: paragraphId, model: model, useCache: useCache)
         } catch {
             self.error = error.localizedDescription
         }

@@ -3,64 +3,14 @@ import os
 
 let log = Logger(subsystem: "com.TS.FLTS", category: "app")
 
-/// A failed core command, carrying the backend's message.
-struct CoreFailure: LocalizedError, Sendable {
-    let message: String
-    var errorDescription: String? { message }
-}
+/// What stores call; the generated `FltsCore` in the app, a fake in tests.
+typealias CoreService = FltsCoreProtocol
 
-/// What stores need from the core; faked in tests.
-protocol CoreService: Sendable {
-    func invokeRaw(_ cmd: String, _ args: [String: JSONValue]) async throws -> Data
-}
-
-extension CoreService {
-    func invoke<T: Decodable>(
-        _ cmd: String, _ args: [String: JSONValue] = [:], as type: T.Type = T.self
-    ) async throws -> T {
-        let data = try await invokeRaw(cmd, args)
-        do {
-            return try JSONDecoder().decode(T.self, from: data)
-        } catch {
-            log.error("decoding \(cmd, privacy: .public) failed: \(error, privacy: .public)")
-            throw CoreFailure(message: "Unexpected reply to \(cmd): \(error)")
-        }
-    }
-
-    func call(_ cmd: String, _ args: [String: JSONValue] = [:]) async throws {
-        _ = try await invokeRaw(cmd, args)
-    }
-}
-
-/// The Rust core behind UniFFI. Events arrive on Rust threads and are hopped
-/// onto the main actor before reaching stores.
-final class CoreClient: CoreService {
-    private let core: FltsCore
-    let events: EventHub
-
+/// Starts the Rust core with a shell that hops events onto the main actor.
+enum CoreClient {
     @MainActor
-    init(events: EventHub) throws {
-        self.events = events
-        let shell = ShellBridge(events: events)
-        do {
-            core = try FltsCore.start(shell: shell)
-        } catch {
-            throw CoreFailure(message: "\(error)")
-        }
-    }
-
-    func invokeRaw(_ cmd: String, _ args: [String: JSONValue]) async throws -> Data {
-        let json = try JSONEncoder().encode(args)
-        do {
-            let reply = try await core.invoke(cmd: cmd, args: String(decoding: json, as: UTF8.self))
-            return Data(reply.utf8)
-        } catch let CoreError.Failed(message) {
-            throw CoreFailure(message: message)
-        }
-    }
-
-    func shutdown() async {
-        await core.shutdown()
+    static func start(events: EventHub) throws -> FltsCore {
+        try FltsCore.start(shell: ShellBridge(events: events))
     }
 }
 
@@ -71,10 +21,10 @@ private final class ShellBridge: Shell {
         self.events = events
     }
 
-    func onEvent(name: String, payload: String) {
-        let data = Data(payload.utf8)
-        Task { @MainActor [events] in
-            events.deliver(name, data)
+    /// The main queue keeps events in emission order (separate Tasks would not).
+    func onEvent(event: CoreEvent) {
+        DispatchQueue.main.async { [events] in
+            MainActor.assumeIsolated { events.deliver(event) }
         }
     }
 

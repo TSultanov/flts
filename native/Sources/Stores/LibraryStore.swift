@@ -66,16 +66,19 @@ final class LibraryStore: CoreBound {
 
     func attach(_ core: any CoreService) {
         self.core = core
-        events.on("library_updated") { [weak self] _ in
-            self?.importProgress = nil
-            self?.scheduleReload()
-        }
-        // Emitted per saved paragraph during a chapter translation.
-        events.on("book_updated", as: UUID.self) { [weak self] _ in
-            self?.scheduleReload()
-        }
-        events.on("library_import_progress", as: ImportProgress.self) { [weak self] p in
-            self?.importProgress = p.done < p.total ? p : nil
+        events.on { [weak self] event in
+            switch event {
+            case .libraryUpdated:
+                self?.importProgress = nil
+                self?.scheduleReload()
+            // Emitted per saved paragraph during a chapter translation.
+            case .bookUpdated:
+                self?.scheduleReload()
+            case .libraryImportProgress(let p):
+                self?.importProgress = p.done < p.total ? p : nil
+            default:
+                break
+            }
         }
         Task { await reload() }
     }
@@ -96,7 +99,7 @@ final class LibraryStore: CoreBound {
     func reload() async {
         guard let core else { return }
         do {
-            books = try await core.invoke("list_books")
+            books = try await core.listBooks()
             var tree = LibraryFolder.build(books)
             for path in pendingFolders where !tree.allPaths.contains(path) {
                 tree = tree.addingEmpty(path)
@@ -117,7 +120,7 @@ final class LibraryStore: CoreBound {
         guard let core else { return }
         for id in ids {
             do {
-                try await core.call("delete_book", ["bookId": .uuid(id)])
+                try await core.deleteBook(bookId: id)
             } catch {
                 self.error = error.localizedDescription
             }
@@ -129,7 +132,7 @@ final class LibraryStore: CoreBound {
         guard let core else { return }
         for id in ids {
             do {
-                try await core.call("move_book", ["bookId": .uuid(id), "path": .strings(path)])
+                try await core.moveBook(bookId: id, path: path)
             } catch {
                 self.error = error.localizedDescription
             }
@@ -147,31 +150,24 @@ final class LibraryStore: CoreBound {
     // MARK: Import
 
     func parseEpub(at url: URL) async throws -> EpubPreview {
-        guard let core else { throw CoreFailure(message: "Not ready") }
+        guard let core else { throw CoreError.Failed(message: "Not ready") }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        let data = try Data(contentsOf: url)
-        let raw: JSONValue = try await core.invoke(
-            "parse_epub", ["epubBase64": .string(data.base64EncodedString())])
-        let summary = try JSONDecoder().decode(EpubPreview.Summary.self, from: JSONEncoder().encode(raw))
-        return EpubPreview(raw: raw, summary: summary)
+        return try await core.parseEpub(path: url.path)
     }
 
     @discardableResult
     func importEpub(_ preview: EpubPreview, sourceLanguageId: String) async throws -> UUID {
-        guard let core else { throw CoreFailure(message: "Not ready") }
-        let id: UUID = try await core.invoke(
-            "import_epub", ["book": preview.raw, "sourceLanguageId": .string(sourceLanguageId)])
+        guard let core else { throw CoreError.Failed(message: "Not ready") }
+        let id = try await core.importEpub(preview: preview, sourceLanguageId: sourceLanguageId)
         await reload()
         return id
     }
 
     @discardableResult
     func importText(title: String, text: String, sourceLanguageId: String) async throws -> UUID {
-        guard let core else { throw CoreFailure(message: "Not ready") }
-        let id: UUID = try await core.invoke(
-            "import_plain_text",
-            ["title": .string(title), "text": .string(text), "sourceLanguageId": .string(sourceLanguageId)])
+        guard let core else { throw CoreError.Failed(message: "Not ready") }
+        let id = try await core.importPlainText(title: title, text: text, sourceLanguageId: sourceLanguageId)
         await reload()
         return id
     }

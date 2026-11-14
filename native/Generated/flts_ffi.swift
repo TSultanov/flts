@@ -3,6 +3,7 @@
 
 // swiftlint:disable all
 import Foundation
+import Foundation
 
 // Depending on the consumer's build setup, the low-level FFI code
 // might be in a separate module, or it might be compiled inline into
@@ -471,6 +472,62 @@ private let UNIFFI_CALLBACK_UNEXPECTED_ERROR: Int32 = 2
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterInt64: FfiConverterPrimitive {
+    typealias FfiType = Int64
+    typealias SwiftType = Int64
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Int64 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Int64, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterDouble: FfiConverterPrimitive {
+    typealias FfiType = Double
+    typealias SwiftType = Double
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Double {
+        return try lift(readDouble(&buf))
+    }
+
+    public static func write(_ value: Double, into buf: inout [UInt8]) {
+        writeDouble(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterBool : FfiConverter {
+    typealias FfiType = Int8
+    typealias SwiftType = Bool
+
+    public static func lift(_ value: Int8) throws -> Bool {
+        return value != 0
+    }
+
+    public static func lower(_ value: Bool) -> Int8 {
+        return value ? 1 : 0
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Bool {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Bool, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterString: FfiConverter {
     typealias SwiftType = String
     typealias FfiType = RustBuffer
@@ -517,17 +574,275 @@ fileprivate struct FfiConverterString: FfiConverter {
 
 
 
-public protocol FltsCoreProtocol: AnyObject, Sendable {
+/**
+ * A parsed EPUB, kept in Rust until it is imported.
+ */
+public protocol EpubPreviewProtocol: AnyObject, Sendable {
+    
+    func chapters()  -> [EpubChapterSummary]
     
     /**
-     * `args` is a JSON object with camelCase keys; the result is JSON.
+     * As declared by the book (often ISO 639-1).
      */
-    func invoke(cmd: String, args: String) async throws  -> String
+    func language()  -> String?
+    
+    func title()  -> String
+    
+}
+/**
+ * A parsed EPUB, kept in Rust until it is imported.
+ */
+open class EpubPreview: EpubPreviewProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_flts_ffi_fn_clone_epubpreview(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_flts_ffi_fn_free_epubpreview(handle, $0) }
+    }
+
+    
+
+    
+open func chapters() -> [EpubChapterSummary]  {
+    return try!  FfiConverterSequenceTypeEpubChapterSummary.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flts_ffi_fn_method_epubpreview_chapters(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * As declared by the book (often ISO 639-1).
+     */
+open func language() -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flts_ffi_fn_method_epubpreview_language(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+open func title() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flts_ffi_fn_method_epubpreview_title(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEpubPreview: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = EpubPreview
+
+    public static func lift(_ handle: UInt64) throws -> EpubPreview {
+        return EpubPreview(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: EpubPreview) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EpubPreview {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: EpubPreview, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEpubPreview_lift(_ handle: UInt64) throws -> EpubPreview {
+    return try FfiConverterTypeEpubPreview.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEpubPreview_lower(_ value: EpubPreview) -> UInt64 {
+    return FfiConverterTypeEpubPreview.lower(value)
+}
+
+
+
+
+
+
+public protocol FltsCoreProtocol: AnyObject, Sendable {
+    
+    func createCardForWord(bookId: Uuid, paragraphId: Number, sentenceId: Number, wordId: Number) async throws  -> CardResult
+    
+    func deleteBook(bookId: Uuid) async throws 
+    
+    func getAnkiSyncStatus() async throws  -> AnkiSyncStatus
+    
+    func getBookChapterParagraphIds(bookId: Uuid, chapterId: Number) async throws  -> [Number]
+    
+    func getBookReadingState(bookId: Uuid) async throws  -> BookReadingState?
+    
+    func getBookSummaryStatus(bookId: Uuid) async throws  -> BookSummaryStatus
+    
+    func getConfig() async throws  -> AppConfig
+    
+    func getLanguages() throws  -> [LanguageInfo]
+    
+    func getLibraryRoot() async throws  -> String
+    
+    func getModels() async throws  -> [ModelInfo]
+    
+    func getNowPlaying() async throws  -> NowPlaying?
+    
+    func getParagraphTexts(bookId: Uuid, paragraphIds: [Number]) async throws  -> ParagraphTexts
+    
+    func getSyncStatus() async throws  -> SyncStatus
+    
+    func getSystemDefinition(word: String, sourceLang: String, targetLang: String) async throws  -> SystemDefinition?
+    
+    func getTrackLyricsState(trackId: String, targetLang: String, model: String) async throws  -> TrackLyricsState
+    
+    func getTranslationProviders() throws  -> [ProviderMeta]
+    
+    func getWordInfo(bookId: Uuid, paragraphId: Number, sentenceId: Number, wordId: Number) async throws  -> WordInfo?
+    
+    func importEpub(preview: EpubPreview, sourceLanguageId: String) async throws  -> Uuid
+    
+    func importPlainText(title: String, text: String, sourceLanguageId: String) async throws  -> Uuid
+    
+    func listBookChapters(bookId: Uuid) async throws  -> [ChapterMeta]
+    
+    func listBooks() async throws  -> [BookMeta]
+    
+    func listTranslationActivity() async throws  -> [ActiveTranslation]
+    
+    func moveBook(bookId: Uuid, path: [String]) async throws 
+    
+    /**
+     * Parses an EPUB file; the book stays in Rust until `import_epub`.
+     */
+    func parseEpub(path: String) async throws  -> EpubPreview
+    
+    /**
+     * A declared language code as a known ISO 639-3 id.
+     */
+    func parseLanguageId(code: String?)  -> String?
+    
+    func purgeGeminiCaches() async throws  -> Number
+    
+    func saveBookReadingState(bookId: Uuid, state: BookReadingState) async throws 
     
     /**
      * Flushes and stops the backend; call once before the process exits.
      */
     func shutdown() async 
+    
+    func spotifyCdpStatus() async throws  -> SpotifyCdpStatus
+    
+    func spotifyInstallLoginAgent() async throws  -> SpotifyLoginAgentStatus
+    
+    func spotifyLoginAgentStatus() async throws  -> SpotifyLoginAgentStatus
+    
+    func spotifyRemoveLoginAgent() async throws  -> SpotifyLoginAgentStatus
+    
+    func spotifyRestartWithDevtools() async throws  -> SpotifyCdpStatus
+    
+    func spotifyWebConnect(clientId: String) async throws 
+    
+    func spotifyWebDisconnect() async throws 
+    
+    func spotifyWebQueue() async throws  -> QueueSnapshot?
+    
+    func spotifyWebStatus() async throws  -> SpotifyWebStatus
+    
+    func startSpotifyWatcher() async throws 
+    
+    func stopSpotifyWatcher() async throws 
+    
+    func syncAddDevice(deviceId: String, name: String) async throws 
+    
+    func syncAnkiNow() async throws 
+    
+    func syncKeepIdentity() async throws 
+    
+    func syncListDevices() async throws  -> [DeviceEntry]
+    
+    func syncListPending() async throws  -> [PendingDevice]
+    
+    func syncRemoveDevice(deviceId: String) async throws 
+    
+    func syncResetIdentity() async throws 
+    
+    func syncSetDeviceName(name: String) async throws 
+    
+    func syncSetEnabled(enabled: Bool) async throws 
+    
+    func syncThisDevice() async throws  -> ThisDevice?
+    
+    func syncWake() async throws 
+    
+    func syncWebUiUrl() async throws  -> String?
+    
+    func translateChapter(bookId: Uuid, chapterId: Number, model: String, useCache: Bool) async throws 
+    
+    func translateParagraph(bookId: Uuid, paragraphId: Number, model: String, useCache: Bool) async throws 
+    
+    func updateConfig(config: AppConfig) async throws 
     
 }
 open class FltsCore: FltsCoreProtocol, @unchecked Sendable {
@@ -596,21 +911,420 @@ public static func start(shell: Shell)throws  -> FltsCore  {
     
 
     
-    /**
-     * `args` is a JSON object with camelCase keys; the result is JSON.
-     */
-open func invoke(cmd: String, args: String)async throws  -> String  {
+open func createCardForWord(bookId: Uuid, paragraphId: Number, sentenceId: Number, wordId: Number)async throws  -> CardResult  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
-                uniffi_flts_ffi_fn_method_fltscore_invoke(
-                        self.uniffiCloneHandle(),FfiConverterString.lower(cmd),FfiConverterString.lower(args)
+                uniffi_flts_ffi_fn_method_fltscore_create_card_for_word(
+                        self.uniffiCloneHandle(),FfiConverterTypeUuid_lower(bookId),FfiConverterTypeNumber_lower(paragraphId),FfiConverterTypeNumber_lower(sentenceId),FfiConverterTypeNumber_lower(wordId)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCardResult_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func deleteBook(bookId: Uuid)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_delete_book(
+                        self.uniffiCloneHandle(),FfiConverterTypeUuid_lower(bookId)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func getAnkiSyncStatus()async throws  -> AnkiSyncStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_get_anki_sync_status(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeAnkiSyncStatus_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func getBookChapterParagraphIds(bookId: Uuid, chapterId: Number)async throws  -> [Number]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_get_book_chapter_paragraph_ids(
+                        self.uniffiCloneHandle(),FfiConverterTypeUuid_lower(bookId),FfiConverterTypeNumber_lower(chapterId)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeNumber.lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func getBookReadingState(bookId: Uuid)async throws  -> BookReadingState?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_get_book_reading_state(
+                        self.uniffiCloneHandle(),FfiConverterTypeUuid_lower(bookId)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionTypeBookReadingState.lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func getBookSummaryStatus(bookId: Uuid)async throws  -> BookSummaryStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_get_book_summary_status(
+                        self.uniffiCloneHandle(),FfiConverterTypeUuid_lower(bookId)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeBookSummaryStatus_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func getConfig()async throws  -> AppConfig  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_get_config(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeAppConfig_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func getLanguages()throws  -> [LanguageInfo]  {
+    return try  FfiConverterSequenceTypeLanguageInfo.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_flts_ffi_fn_method_fltscore_get_languages(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+open func getLibraryRoot()async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_get_library_root(
+                        self.uniffiCloneHandle()
                 )
             },
             pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
             completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func getModels()async throws  -> [ModelInfo]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_get_models(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeModelInfo.lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func getNowPlaying()async throws  -> NowPlaying?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_get_now_playing(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionTypeNowPlaying.lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func getParagraphTexts(bookId: Uuid, paragraphIds: [Number])async throws  -> ParagraphTexts  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_get_paragraph_texts(
+                        self.uniffiCloneHandle(),FfiConverterTypeUuid_lower(bookId),FfiConverterSequenceTypeNumber.lower(paragraphIds)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeParagraphTexts_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func getSyncStatus()async throws  -> SyncStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_get_sync_status(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSyncStatus_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func getSystemDefinition(word: String, sourceLang: String, targetLang: String)async throws  -> SystemDefinition?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_get_system_definition(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(word),FfiConverterString.lower(sourceLang),FfiConverterString.lower(targetLang)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionTypeSystemDefinition.lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func getTrackLyricsState(trackId: String, targetLang: String, model: String)async throws  -> TrackLyricsState  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_get_track_lyrics_state(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(trackId),FfiConverterString.lower(targetLang),FfiConverterString.lower(model)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeTrackLyricsState_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func getTranslationProviders()throws  -> [ProviderMeta]  {
+    return try  FfiConverterSequenceTypeProviderMeta.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_flts_ffi_fn_method_fltscore_get_translation_providers(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+open func getWordInfo(bookId: Uuid, paragraphId: Number, sentenceId: Number, wordId: Number)async throws  -> WordInfo?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_get_word_info(
+                        self.uniffiCloneHandle(),FfiConverterTypeUuid_lower(bookId),FfiConverterTypeNumber_lower(paragraphId),FfiConverterTypeNumber_lower(sentenceId),FfiConverterTypeNumber_lower(wordId)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionTypeWordInfo.lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func importEpub(preview: EpubPreview, sourceLanguageId: String)async throws  -> Uuid  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_import_epub(
+                        self.uniffiCloneHandle(),FfiConverterTypeEpubPreview_lower(preview),FfiConverterString.lower(sourceLanguageId)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeUuid_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func importPlainText(title: String, text: String, sourceLanguageId: String)async throws  -> Uuid  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_import_plain_text(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(title),FfiConverterString.lower(text),FfiConverterString.lower(sourceLanguageId)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeUuid_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func listBookChapters(bookId: Uuid)async throws  -> [ChapterMeta]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_list_book_chapters(
+                        self.uniffiCloneHandle(),FfiConverterTypeUuid_lower(bookId)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeChapterMeta.lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func listBooks()async throws  -> [BookMeta]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_list_books(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeBookMeta.lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func listTranslationActivity()async throws  -> [ActiveTranslation]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_list_translation_activity(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeActiveTranslation.lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func moveBook(bookId: Uuid, path: [String])async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_move_book(
+                        self.uniffiCloneHandle(),FfiConverterTypeUuid_lower(bookId),FfiConverterSequenceString.lower(path)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+    /**
+     * Parses an EPUB file; the book stays in Rust until `import_epub`.
+     */
+open func parseEpub(path: String)async throws  -> EpubPreview  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_parse_epub(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(path)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_u64,
+            completeFunc: ffi_flts_ffi_rust_future_complete_u64,
+            freeFunc: ffi_flts_ffi_rust_future_free_u64,
+            liftFunc: FfiConverterTypeEpubPreview_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+    /**
+     * A declared language code as a known ISO 639-3 id.
+     */
+open func parseLanguageId(code: String?) -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flts_ffi_fn_method_fltscore_parse_language_id(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionString.lower(code),uniffiCallStatus
+    )
+})
+}
+    
+open func purgeGeminiCaches()async throws  -> Number  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_purge_gemini_caches(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_i64,
+            completeFunc: ffi_flts_ffi_rust_future_complete_i64,
+            freeFunc: ffi_flts_ffi_rust_future_free_i64,
+            liftFunc: FfiConverterTypeNumber_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func saveBookReadingState(bookId: Uuid, state: BookReadingState)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_save_book_reading_state(
+                        self.uniffiCloneHandle(),FfiConverterTypeUuid_lower(bookId),FfiConverterTypeBookReadingState_lower(state)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
             errorHandler: FfiConverterTypeCoreError_lift
         )
 }
@@ -632,6 +1346,422 @@ open func shutdown()async   {
             liftFunc: { $0 },
             errorHandler: nil
             
+        )
+}
+    
+open func spotifyCdpStatus()async throws  -> SpotifyCdpStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_spotify_cdp_status(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSpotifyCdpStatus_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func spotifyInstallLoginAgent()async throws  -> SpotifyLoginAgentStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_spotify_install_login_agent(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSpotifyLoginAgentStatus_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func spotifyLoginAgentStatus()async throws  -> SpotifyLoginAgentStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_spotify_login_agent_status(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSpotifyLoginAgentStatus_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func spotifyRemoveLoginAgent()async throws  -> SpotifyLoginAgentStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_spotify_remove_login_agent(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSpotifyLoginAgentStatus_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func spotifyRestartWithDevtools()async throws  -> SpotifyCdpStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_spotify_restart_with_devtools(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSpotifyCdpStatus_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func spotifyWebConnect(clientId: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_spotify_web_connect(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(clientId)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func spotifyWebDisconnect()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_spotify_web_disconnect(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func spotifyWebQueue()async throws  -> QueueSnapshot?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_spotify_web_queue(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionTypeQueueSnapshot.lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func spotifyWebStatus()async throws  -> SpotifyWebStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_spotify_web_status(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSpotifyWebStatus_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func startSpotifyWatcher()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_start_spotify_watcher(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func stopSpotifyWatcher()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_stop_spotify_watcher(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func syncAddDevice(deviceId: String, name: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_sync_add_device(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(deviceId),FfiConverterString.lower(name)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func syncAnkiNow()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_sync_anki_now(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func syncKeepIdentity()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_sync_keep_identity(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func syncListDevices()async throws  -> [DeviceEntry]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_sync_list_devices(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeDeviceEntry.lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func syncListPending()async throws  -> [PendingDevice]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_sync_list_pending(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypePendingDevice.lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func syncRemoveDevice(deviceId: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_sync_remove_device(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(deviceId)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func syncResetIdentity()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_sync_reset_identity(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func syncSetDeviceName(name: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_sync_set_device_name(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(name)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func syncSetEnabled(enabled: Bool)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_sync_set_enabled(
+                        self.uniffiCloneHandle(),FfiConverterBool.lower(enabled)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func syncThisDevice()async throws  -> ThisDevice?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_sync_this_device(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionTypeThisDevice.lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func syncWake()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_sync_wake(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func syncWebUiUrl()async throws  -> String?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_sync_web_ui_url(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_flts_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_flts_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionString.lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func translateChapter(bookId: Uuid, chapterId: Number, model: String, useCache: Bool)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_translate_chapter(
+                        self.uniffiCloneHandle(),FfiConverterTypeUuid_lower(bookId),FfiConverterTypeNumber_lower(chapterId),FfiConverterString.lower(model),FfiConverterBool.lower(useCache)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func translateParagraph(bookId: Uuid, paragraphId: Number, model: String, useCache: Bool)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_translate_paragraph(
+                        self.uniffiCloneHandle(),FfiConverterTypeUuid_lower(bookId),FfiConverterTypeNumber_lower(paragraphId),FfiConverterString.lower(model),FfiConverterBool.lower(useCache)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+open func updateConfig(config: AppConfig)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_flts_ffi_fn_method_fltscore_update_config(
+                        self.uniffiCloneHandle(),FfiConverterTypeAppConfig_lower(config)
+                )
+            },
+            pollFunc: ffi_flts_ffi_rust_future_poll_void,
+            completeFunc: ffi_flts_ffi_rust_future_complete_void,
+            freeFunc: ffi_flts_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
         )
 }
     
@@ -812,10 +1942,7 @@ public func FfiConverterTypeMainTask_lower(_ value: MainTask) -> UInt64 {
  */
 public protocol Shell: AnyObject, Sendable {
     
-    /**
-     * Same names and JSON payloads the Tauri frontend receives.
-     */
-    func onEvent(name: String, payload: String) 
+    func onEvent(event: CoreEvent) 
     
     /**
      * Must call `task.run()` on the UI thread.
@@ -879,15 +2006,11 @@ open class ShellImpl: Shell, @unchecked Sendable {
     
 
     
-    /**
-     * Same names and JSON payloads the Tauri frontend receives.
-     */
-open func onEvent(name: String, payload: String)  {try! rustCall() {
+open func onEvent(event: CoreEvent)  {try! rustCall() {
         uniffiCallStatus in
     uniffi_flts_ffi_fn_method_shell_on_event(
             self.uniffiCloneHandle(),
-        FfiConverterString.lower(name),
-        FfiConverterString.lower(payload),uniffiCallStatus
+        FfiConverterTypeCoreEvent_lower(event),uniffiCallStatus
     )
 }
 }
@@ -934,8 +2057,7 @@ fileprivate struct UniffiCallbackInterfaceShell {
         },
         onEvent: { (
             uniffiHandle: UInt64,
-            name: RustBuffer,
-            payload: RustBuffer,
+            event: RustBuffer,
             uniffiOutReturn: UnsafeMutableRawPointer,
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
@@ -945,8 +2067,7 @@ fileprivate struct UniffiCallbackInterfaceShell {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onEvent(
-                     name: try FfiConverterString.lift(name),
-                     payload: try FfiConverterString.lift(payload)
+                     event: try FfiConverterTypeCoreEvent_lift(event)
                 )
             }
 
@@ -1059,6 +2180,3023 @@ public func FfiConverterTypeShell_lower(_ value: Shell) -> UInt64 {
 
 
 
+public struct ActiveTranslation: Equatable, Hashable {
+    public var bookId: Uuid
+    public var paragraphId: Number
+    public var requestId: Number
+    public var progressChars: Number
+    public var expectedChars: Number
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(bookId: Uuid, paragraphId: Number, requestId: Number, progressChars: Number, expectedChars: Number) {
+        self.bookId = bookId
+        self.paragraphId = paragraphId
+        self.requestId = requestId
+        self.progressChars = progressChars
+        self.expectedChars = expectedChars
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ActiveTranslation: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeActiveTranslation: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ActiveTranslation {
+        return
+            try ActiveTranslation(
+                bookId: FfiConverterTypeUuid.read(from: &buf), 
+                paragraphId: FfiConverterTypeNumber.read(from: &buf), 
+                requestId: FfiConverterTypeNumber.read(from: &buf), 
+                progressChars: FfiConverterTypeNumber.read(from: &buf), 
+                expectedChars: FfiConverterTypeNumber.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ActiveTranslation, into buf: inout [UInt8]) {
+        FfiConverterTypeUuid.write(value.bookId, into: &buf)
+        FfiConverterTypeNumber.write(value.paragraphId, into: &buf)
+        FfiConverterTypeNumber.write(value.requestId, into: &buf)
+        FfiConverterTypeNumber.write(value.progressChars, into: &buf)
+        FfiConverterTypeNumber.write(value.expectedChars, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeActiveTranslation_lift(_ buf: RustBuffer) throws -> ActiveTranslation {
+    return try FfiConverterTypeActiveTranslation.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeActiveTranslation_lower(_ value: ActiveTranslation) -> RustBuffer {
+    return FfiConverterTypeActiveTranslation.lower(value)
+}
+
+
+public struct AnkiSyncReport: Equatable, Hashable {
+    public var totalCards: Number
+    public var attempted: Number
+    public var succeeded: Number
+    public var failed: Number
+    public var persistentFailures: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(totalCards: Number, attempted: Number, succeeded: Number, failed: Number, persistentFailures: [String]) {
+        self.totalCards = totalCards
+        self.attempted = attempted
+        self.succeeded = succeeded
+        self.failed = failed
+        self.persistentFailures = persistentFailures
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension AnkiSyncReport: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAnkiSyncReport: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AnkiSyncReport {
+        return
+            try AnkiSyncReport(
+                totalCards: FfiConverterTypeNumber.read(from: &buf), 
+                attempted: FfiConverterTypeNumber.read(from: &buf), 
+                succeeded: FfiConverterTypeNumber.read(from: &buf), 
+                failed: FfiConverterTypeNumber.read(from: &buf), 
+                persistentFailures: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AnkiSyncReport, into buf: inout [UInt8]) {
+        FfiConverterTypeNumber.write(value.totalCards, into: &buf)
+        FfiConverterTypeNumber.write(value.attempted, into: &buf)
+        FfiConverterTypeNumber.write(value.succeeded, into: &buf)
+        FfiConverterTypeNumber.write(value.failed, into: &buf)
+        FfiConverterSequenceString.write(value.persistentFailures, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAnkiSyncReport_lift(_ buf: RustBuffer) throws -> AnkiSyncReport {
+    return try FfiConverterTypeAnkiSyncReport.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAnkiSyncReport_lower(_ value: AnkiSyncReport) -> RustBuffer {
+    return FfiConverterTypeAnkiSyncReport.lower(value)
+}
+
+
+public struct AnkiSyncStatus: Equatable, Hashable {
+    public var state: AnkiSyncState
+    public var lastFinishedAtMs: Double?
+    public var lastError: String?
+    public var lastReport: AnkiSyncReport?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(state: AnkiSyncState, lastFinishedAtMs: Double?, lastError: String?, lastReport: AnkiSyncReport?) {
+        self.state = state
+        self.lastFinishedAtMs = lastFinishedAtMs
+        self.lastError = lastError
+        self.lastReport = lastReport
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension AnkiSyncStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAnkiSyncStatus: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AnkiSyncStatus {
+        return
+            try AnkiSyncStatus(
+                state: FfiConverterTypeAnkiSyncState.read(from: &buf), 
+                lastFinishedAtMs: FfiConverterOptionDouble.read(from: &buf), 
+                lastError: FfiConverterOptionString.read(from: &buf), 
+                lastReport: FfiConverterOptionTypeAnkiSyncReport.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AnkiSyncStatus, into buf: inout [UInt8]) {
+        FfiConverterTypeAnkiSyncState.write(value.state, into: &buf)
+        FfiConverterOptionDouble.write(value.lastFinishedAtMs, into: &buf)
+        FfiConverterOptionString.write(value.lastError, into: &buf)
+        FfiConverterOptionTypeAnkiSyncReport.write(value.lastReport, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAnkiSyncStatus_lift(_ buf: RustBuffer) throws -> AnkiSyncStatus {
+    return try FfiConverterTypeAnkiSyncStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAnkiSyncStatus_lower(_ value: AnkiSyncStatus) -> RustBuffer {
+    return FfiConverterTypeAnkiSyncStatus.lower(value)
+}
+
+
+public struct AppConfig: Equatable, Hashable {
+    public var targetLanguageId: String
+    public var translationProvider: TranslationProvider
+    public var geminiApiKey: String?
+    public var openaiApiKey: String?
+    public var deepseekApiKey: String?
+    public var zaiApiKey: String?
+    public var openrouterApiKey: String?
+    public var model: String
+    public var libraryPath: String?
+    public var spotifyClientId: String?
+    public var spotifyPreloadCount: Number
+    public var spotifyShowNextTrack: Bool
+    public var ankiEndpoint: String?
+    public var ankiApiKey: String?
+    public var ankiSyncEnabled: Bool
+    public var syncEnabled: Bool
+    public var syncDeviceName: String?
+    public var translationConcurrency: Number
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(targetLanguageId: String, translationProvider: TranslationProvider, geminiApiKey: String?, openaiApiKey: String?, deepseekApiKey: String?, zaiApiKey: String?, openrouterApiKey: String?, model: String, libraryPath: String?, spotifyClientId: String?, spotifyPreloadCount: Number, spotifyShowNextTrack: Bool, ankiEndpoint: String?, ankiApiKey: String?, ankiSyncEnabled: Bool, syncEnabled: Bool, syncDeviceName: String?, translationConcurrency: Number) {
+        self.targetLanguageId = targetLanguageId
+        self.translationProvider = translationProvider
+        self.geminiApiKey = geminiApiKey
+        self.openaiApiKey = openaiApiKey
+        self.deepseekApiKey = deepseekApiKey
+        self.zaiApiKey = zaiApiKey
+        self.openrouterApiKey = openrouterApiKey
+        self.model = model
+        self.libraryPath = libraryPath
+        self.spotifyClientId = spotifyClientId
+        self.spotifyPreloadCount = spotifyPreloadCount
+        self.spotifyShowNextTrack = spotifyShowNextTrack
+        self.ankiEndpoint = ankiEndpoint
+        self.ankiApiKey = ankiApiKey
+        self.ankiSyncEnabled = ankiSyncEnabled
+        self.syncEnabled = syncEnabled
+        self.syncDeviceName = syncDeviceName
+        self.translationConcurrency = translationConcurrency
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension AppConfig: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAppConfig: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AppConfig {
+        return
+            try AppConfig(
+                targetLanguageId: FfiConverterString.read(from: &buf), 
+                translationProvider: FfiConverterTypeTranslationProvider.read(from: &buf), 
+                geminiApiKey: FfiConverterOptionString.read(from: &buf), 
+                openaiApiKey: FfiConverterOptionString.read(from: &buf), 
+                deepseekApiKey: FfiConverterOptionString.read(from: &buf), 
+                zaiApiKey: FfiConverterOptionString.read(from: &buf), 
+                openrouterApiKey: FfiConverterOptionString.read(from: &buf), 
+                model: FfiConverterString.read(from: &buf), 
+                libraryPath: FfiConverterOptionString.read(from: &buf), 
+                spotifyClientId: FfiConverterOptionString.read(from: &buf), 
+                spotifyPreloadCount: FfiConverterTypeNumber.read(from: &buf), 
+                spotifyShowNextTrack: FfiConverterBool.read(from: &buf), 
+                ankiEndpoint: FfiConverterOptionString.read(from: &buf), 
+                ankiApiKey: FfiConverterOptionString.read(from: &buf), 
+                ankiSyncEnabled: FfiConverterBool.read(from: &buf), 
+                syncEnabled: FfiConverterBool.read(from: &buf), 
+                syncDeviceName: FfiConverterOptionString.read(from: &buf), 
+                translationConcurrency: FfiConverterTypeNumber.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AppConfig, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.targetLanguageId, into: &buf)
+        FfiConverterTypeTranslationProvider.write(value.translationProvider, into: &buf)
+        FfiConverterOptionString.write(value.geminiApiKey, into: &buf)
+        FfiConverterOptionString.write(value.openaiApiKey, into: &buf)
+        FfiConverterOptionString.write(value.deepseekApiKey, into: &buf)
+        FfiConverterOptionString.write(value.zaiApiKey, into: &buf)
+        FfiConverterOptionString.write(value.openrouterApiKey, into: &buf)
+        FfiConverterString.write(value.model, into: &buf)
+        FfiConverterOptionString.write(value.libraryPath, into: &buf)
+        FfiConverterOptionString.write(value.spotifyClientId, into: &buf)
+        FfiConverterTypeNumber.write(value.spotifyPreloadCount, into: &buf)
+        FfiConverterBool.write(value.spotifyShowNextTrack, into: &buf)
+        FfiConverterOptionString.write(value.ankiEndpoint, into: &buf)
+        FfiConverterOptionString.write(value.ankiApiKey, into: &buf)
+        FfiConverterBool.write(value.ankiSyncEnabled, into: &buf)
+        FfiConverterBool.write(value.syncEnabled, into: &buf)
+        FfiConverterOptionString.write(value.syncDeviceName, into: &buf)
+        FfiConverterTypeNumber.write(value.translationConcurrency, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAppConfig_lift(_ buf: RustBuffer) throws -> AppConfig {
+    return try FfiConverterTypeAppConfig.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAppConfig_lower(_ value: AppConfig) -> RustBuffer {
+    return FfiConverterTypeAppConfig.lower(value)
+}
+
+
+public struct BookMeta: Equatable, Hashable {
+    public var id: Uuid
+    public var title: String
+    public var chaptersCount: Number
+    public var paragraphsCount: Number
+    public var translationRatio: Double
+    public var path: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: Uuid, title: String, chaptersCount: Number, paragraphsCount: Number, translationRatio: Double, path: [String]) {
+        self.id = id
+        self.title = title
+        self.chaptersCount = chaptersCount
+        self.paragraphsCount = paragraphsCount
+        self.translationRatio = translationRatio
+        self.path = path
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension BookMeta: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBookMeta: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BookMeta {
+        return
+            try BookMeta(
+                id: FfiConverterTypeUuid.read(from: &buf), 
+                title: FfiConverterString.read(from: &buf), 
+                chaptersCount: FfiConverterTypeNumber.read(from: &buf), 
+                paragraphsCount: FfiConverterTypeNumber.read(from: &buf), 
+                translationRatio: FfiConverterDouble.read(from: &buf), 
+                path: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BookMeta, into buf: inout [UInt8]) {
+        FfiConverterTypeUuid.write(value.id, into: &buf)
+        FfiConverterString.write(value.title, into: &buf)
+        FfiConverterTypeNumber.write(value.chaptersCount, into: &buf)
+        FfiConverterTypeNumber.write(value.paragraphsCount, into: &buf)
+        FfiConverterDouble.write(value.translationRatio, into: &buf)
+        FfiConverterSequenceString.write(value.path, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBookMeta_lift(_ buf: RustBuffer) throws -> BookMeta {
+    return try FfiConverterTypeBookMeta.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBookMeta_lower(_ value: BookMeta) -> RustBuffer {
+    return FfiConverterTypeBookMeta.lower(value)
+}
+
+
+public struct BookReadingState: Equatable, Hashable {
+    public var chapterId: Number
+    public var paragraphId: Number
+    public var pageOffset: Number
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(chapterId: Number, paragraphId: Number, pageOffset: Number) {
+        self.chapterId = chapterId
+        self.paragraphId = paragraphId
+        self.pageOffset = pageOffset
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension BookReadingState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBookReadingState: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BookReadingState {
+        return
+            try BookReadingState(
+                chapterId: FfiConverterTypeNumber.read(from: &buf), 
+                paragraphId: FfiConverterTypeNumber.read(from: &buf), 
+                pageOffset: FfiConverterTypeNumber.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BookReadingState, into buf: inout [UInt8]) {
+        FfiConverterTypeNumber.write(value.chapterId, into: &buf)
+        FfiConverterTypeNumber.write(value.paragraphId, into: &buf)
+        FfiConverterTypeNumber.write(value.pageOffset, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBookReadingState_lift(_ buf: RustBuffer) throws -> BookReadingState {
+    return try FfiConverterTypeBookReadingState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBookReadingState_lower(_ value: BookReadingState) -> RustBuffer {
+    return FfiConverterTypeBookReadingState.lower(value)
+}
+
+
+public struct BookSummaryStatus: Equatable, Hashable {
+    public var totalChapters: Number
+    public var generated: [Bool]
+    public var activelyGenerating: Number?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(totalChapters: Number, generated: [Bool], activelyGenerating: Number?) {
+        self.totalChapters = totalChapters
+        self.generated = generated
+        self.activelyGenerating = activelyGenerating
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension BookSummaryStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBookSummaryStatus: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BookSummaryStatus {
+        return
+            try BookSummaryStatus(
+                totalChapters: FfiConverterTypeNumber.read(from: &buf), 
+                generated: FfiConverterSequenceBool.read(from: &buf), 
+                activelyGenerating: FfiConverterOptionTypeNumber.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BookSummaryStatus, into buf: inout [UInt8]) {
+        FfiConverterTypeNumber.write(value.totalChapters, into: &buf)
+        FfiConverterSequenceBool.write(value.generated, into: &buf)
+        FfiConverterOptionTypeNumber.write(value.activelyGenerating, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBookSummaryStatus_lift(_ buf: RustBuffer) throws -> BookSummaryStatus {
+    return try FfiConverterTypeBookSummaryStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBookSummaryStatus_lower(_ value: BookSummaryStatus) -> RustBuffer {
+    return FfiConverterTypeBookSummaryStatus.lower(value)
+}
+
+
+public struct ChapterMeta: Equatable, Hashable {
+    public var id: Number
+    public var title: String
+    public var translationRatio: Double
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: Number, title: String, translationRatio: Double) {
+        self.id = id
+        self.title = title
+        self.translationRatio = translationRatio
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ChapterMeta: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeChapterMeta: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ChapterMeta {
+        return
+            try ChapterMeta(
+                id: FfiConverterTypeNumber.read(from: &buf), 
+                title: FfiConverterString.read(from: &buf), 
+                translationRatio: FfiConverterDouble.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ChapterMeta, into buf: inout [UInt8]) {
+        FfiConverterTypeNumber.write(value.id, into: &buf)
+        FfiConverterString.write(value.title, into: &buf)
+        FfiConverterDouble.write(value.translationRatio, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChapterMeta_lift(_ buf: RustBuffer) throws -> ChapterMeta {
+    return try FfiConverterTypeChapterMeta.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChapterMeta_lower(_ value: ChapterMeta) -> RustBuffer {
+    return FfiConverterTypeChapterMeta.lower(value)
+}
+
+
+public struct DeviceEntry: Equatable, Hashable {
+    public var deviceId: String
+    public var name: String
+    public var connected: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(deviceId: String, name: String, connected: Bool) {
+        self.deviceId = deviceId
+        self.name = name
+        self.connected = connected
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension DeviceEntry: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDeviceEntry: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DeviceEntry {
+        return
+            try DeviceEntry(
+                deviceId: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                connected: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DeviceEntry, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.deviceId, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterBool.write(value.connected, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDeviceEntry_lift(_ buf: RustBuffer) throws -> DeviceEntry {
+    return try FfiConverterTypeDeviceEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDeviceEntry_lower(_ value: DeviceEntry) -> RustBuffer {
+    return FfiConverterTypeDeviceEntry.lower(value)
+}
+
+
+public struct EpubChapterSummary: Equatable, Hashable {
+    public var title: String
+    public var paragraphCount: Number
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(title: String, paragraphCount: Number) {
+        self.title = title
+        self.paragraphCount = paragraphCount
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension EpubChapterSummary: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEpubChapterSummary: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EpubChapterSummary {
+        return
+            try EpubChapterSummary(
+                title: FfiConverterString.read(from: &buf), 
+                paragraphCount: FfiConverterTypeNumber.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: EpubChapterSummary, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.title, into: &buf)
+        FfiConverterTypeNumber.write(value.paragraphCount, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEpubChapterSummary_lift(_ buf: RustBuffer) throws -> EpubChapterSummary {
+    return try FfiConverterTypeEpubChapterSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEpubChapterSummary_lower(_ value: EpubChapterSummary) -> RustBuffer {
+    return FfiConverterTypeEpubChapterSummary.lower(value)
+}
+
+
+public struct Gloss: Equatable, Hashable {
+    public var fragment: String
+    public var gloss: String
+    public var note: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(fragment: String, gloss: String, note: String) {
+        self.fragment = fragment
+        self.gloss = gloss
+        self.note = note
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension Gloss: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeGloss: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Gloss {
+        return
+            try Gloss(
+                fragment: FfiConverterString.read(from: &buf), 
+                gloss: FfiConverterString.read(from: &buf), 
+                note: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: Gloss, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.fragment, into: &buf)
+        FfiConverterString.write(value.gloss, into: &buf)
+        FfiConverterString.write(value.note, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGloss_lift(_ buf: RustBuffer) throws -> Gloss {
+    return try FfiConverterTypeGloss.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGloss_lower(_ value: Gloss) -> RustBuffer {
+    return FfiConverterTypeGloss.lower(value)
+}
+
+
+public struct Grammar: Equatable, Hashable {
+    public var originalInitialForm: String
+    public var targetInitialForm: String
+    public var partOfSpeech: String
+    public var plurality: String?
+    public var person: String?
+    public var tense: String?
+    public var grammaticalCase: String?
+    public var other: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(originalInitialForm: String, targetInitialForm: String, partOfSpeech: String, plurality: String?, person: String?, tense: String?, grammaticalCase: String?, other: String?) {
+        self.originalInitialForm = originalInitialForm
+        self.targetInitialForm = targetInitialForm
+        self.partOfSpeech = partOfSpeech
+        self.plurality = plurality
+        self.person = person
+        self.tense = tense
+        self.grammaticalCase = grammaticalCase
+        self.other = other
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension Grammar: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeGrammar: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Grammar {
+        return
+            try Grammar(
+                originalInitialForm: FfiConverterString.read(from: &buf), 
+                targetInitialForm: FfiConverterString.read(from: &buf), 
+                partOfSpeech: FfiConverterString.read(from: &buf), 
+                plurality: FfiConverterOptionString.read(from: &buf), 
+                person: FfiConverterOptionString.read(from: &buf), 
+                tense: FfiConverterOptionString.read(from: &buf), 
+                grammaticalCase: FfiConverterOptionString.read(from: &buf), 
+                other: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: Grammar, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.originalInitialForm, into: &buf)
+        FfiConverterString.write(value.targetInitialForm, into: &buf)
+        FfiConverterString.write(value.partOfSpeech, into: &buf)
+        FfiConverterOptionString.write(value.plurality, into: &buf)
+        FfiConverterOptionString.write(value.person, into: &buf)
+        FfiConverterOptionString.write(value.tense, into: &buf)
+        FfiConverterOptionString.write(value.grammaticalCase, into: &buf)
+        FfiConverterOptionString.write(value.other, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGrammar_lift(_ buf: RustBuffer) throws -> Grammar {
+    return try FfiConverterTypeGrammar.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGrammar_lower(_ value: Grammar) -> RustBuffer {
+    return FfiConverterTypeGrammar.lower(value)
+}
+
+
+public struct ImportProgress: Equatable, Hashable {
+    public var done: Number
+    public var total: Number
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(done: Number, total: Number) {
+        self.done = done
+        self.total = total
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ImportProgress: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeImportProgress: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ImportProgress {
+        return
+            try ImportProgress(
+                done: FfiConverterTypeNumber.read(from: &buf), 
+                total: FfiConverterTypeNumber.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ImportProgress, into buf: inout [UInt8]) {
+        FfiConverterTypeNumber.write(value.done, into: &buf)
+        FfiConverterTypeNumber.write(value.total, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeImportProgress_lift(_ buf: RustBuffer) throws -> ImportProgress {
+    return try FfiConverterTypeImportProgress.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeImportProgress_lower(_ value: ImportProgress) -> RustBuffer {
+    return FfiConverterTypeImportProgress.lower(value)
+}
+
+
+public struct LanguageInfo: Equatable, Hashable {
+    public var id: String
+    public var name: String
+    public var localName: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, name: String, localName: String?) {
+        self.id = id
+        self.name = name
+        self.localName = localName
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension LanguageInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLanguageInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LanguageInfo {
+        return
+            try LanguageInfo(
+                id: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                localName: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LanguageInfo, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterOptionString.write(value.localName, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLanguageInfo_lift(_ buf: RustBuffer) throws -> LanguageInfo {
+    return try FfiConverterTypeLanguageInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLanguageInfo_lower(_ value: LanguageInfo) -> RustBuffer {
+    return FfiConverterTypeLanguageInfo.lower(value)
+}
+
+
+public struct Lyrics: Equatable, Hashable {
+    public var trackId: String
+    public var lines: [LyricsLine]
+    public var synced: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(trackId: String, lines: [LyricsLine], synced: Bool) {
+        self.trackId = trackId
+        self.lines = lines
+        self.synced = synced
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension Lyrics: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLyrics: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Lyrics {
+        return
+            try Lyrics(
+                trackId: FfiConverterString.read(from: &buf), 
+                lines: FfiConverterSequenceTypeLyricsLine.read(from: &buf), 
+                synced: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: Lyrics, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.trackId, into: &buf)
+        FfiConverterSequenceTypeLyricsLine.write(value.lines, into: &buf)
+        FfiConverterBool.write(value.synced, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLyrics_lift(_ buf: RustBuffer) throws -> Lyrics {
+    return try FfiConverterTypeLyrics.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLyrics_lower(_ value: Lyrics) -> RustBuffer {
+    return FfiConverterTypeLyrics.lower(value)
+}
+
+
+public struct LyricsLine: Equatable, Hashable {
+    public var timeMs: Number?
+    public var text: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(timeMs: Number?, text: String) {
+        self.timeMs = timeMs
+        self.text = text
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension LyricsLine: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLyricsLine: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LyricsLine {
+        return
+            try LyricsLine(
+                timeMs: FfiConverterOptionTypeNumber.read(from: &buf), 
+                text: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LyricsLine, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeNumber.write(value.timeMs, into: &buf)
+        FfiConverterString.write(value.text, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLyricsLine_lift(_ buf: RustBuffer) throws -> LyricsLine {
+    return try FfiConverterTypeLyricsLine.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLyricsLine_lower(_ value: LyricsLine) -> RustBuffer {
+    return FfiConverterTypeLyricsLine.lower(value)
+}
+
+
+public struct LyricsLineTranslation: Equatable, Hashable {
+    public var translation: String
+    public var glosses: [Gloss]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(translation: String, glosses: [Gloss]) {
+        self.translation = translation
+        self.glosses = glosses
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension LyricsLineTranslation: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLyricsLineTranslation: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LyricsLineTranslation {
+        return
+            try LyricsLineTranslation(
+                translation: FfiConverterString.read(from: &buf), 
+                glosses: FfiConverterSequenceTypeGloss.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LyricsLineTranslation, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.translation, into: &buf)
+        FfiConverterSequenceTypeGloss.write(value.glosses, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLyricsLineTranslation_lift(_ buf: RustBuffer) throws -> LyricsLineTranslation {
+    return try FfiConverterTypeLyricsLineTranslation.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLyricsLineTranslation_lower(_ value: LyricsLineTranslation) -> RustBuffer {
+    return FfiConverterTypeLyricsLineTranslation.lower(value)
+}
+
+
+public struct LyricsResolved: Equatable, Hashable {
+    public var trackId: String
+    public var lyrics: Lyrics?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(trackId: String, lyrics: Lyrics?) {
+        self.trackId = trackId
+        self.lyrics = lyrics
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension LyricsResolved: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLyricsResolved: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LyricsResolved {
+        return
+            try LyricsResolved(
+                trackId: FfiConverterString.read(from: &buf), 
+                lyrics: FfiConverterOptionTypeLyrics.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LyricsResolved, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.trackId, into: &buf)
+        FfiConverterOptionTypeLyrics.write(value.lyrics, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLyricsResolved_lift(_ buf: RustBuffer) throws -> LyricsResolved {
+    return try FfiConverterTypeLyricsResolved.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLyricsResolved_lower(_ value: LyricsResolved) -> RustBuffer {
+    return FfiConverterTypeLyricsResolved.lower(value)
+}
+
+
+public struct LyricsTranslation: Equatable, Hashable {
+    public var trackId: String
+    public var targetLang: String
+    public var model: String
+    public var lines: [LyricsLineTranslation]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(trackId: String, targetLang: String, model: String, lines: [LyricsLineTranslation]) {
+        self.trackId = trackId
+        self.targetLang = targetLang
+        self.model = model
+        self.lines = lines
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension LyricsTranslation: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLyricsTranslation: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LyricsTranslation {
+        return
+            try LyricsTranslation(
+                trackId: FfiConverterString.read(from: &buf), 
+                targetLang: FfiConverterString.read(from: &buf), 
+                model: FfiConverterString.read(from: &buf), 
+                lines: FfiConverterSequenceTypeLyricsLineTranslation.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LyricsTranslation, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.trackId, into: &buf)
+        FfiConverterString.write(value.targetLang, into: &buf)
+        FfiConverterString.write(value.model, into: &buf)
+        FfiConverterSequenceTypeLyricsLineTranslation.write(value.lines, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLyricsTranslation_lift(_ buf: RustBuffer) throws -> LyricsTranslation {
+    return try FfiConverterTypeLyricsTranslation.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLyricsTranslation_lower(_ value: LyricsTranslation) -> RustBuffer {
+    return FfiConverterTypeLyricsTranslation.lower(value)
+}
+
+
+public struct LyricsTranslationDone: Equatable, Hashable {
+    public var trackId: String
+    public var translation: LyricsTranslation
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(trackId: String, translation: LyricsTranslation) {
+        self.trackId = trackId
+        self.translation = translation
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension LyricsTranslationDone: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLyricsTranslationDone: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LyricsTranslationDone {
+        return
+            try LyricsTranslationDone(
+                trackId: FfiConverterString.read(from: &buf), 
+                translation: FfiConverterTypeLyricsTranslation.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LyricsTranslationDone, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.trackId, into: &buf)
+        FfiConverterTypeLyricsTranslation.write(value.translation, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLyricsTranslationDone_lift(_ buf: RustBuffer) throws -> LyricsTranslationDone {
+    return try FfiConverterTypeLyricsTranslationDone.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLyricsTranslationDone_lower(_ value: LyricsTranslationDone) -> RustBuffer {
+    return FfiConverterTypeLyricsTranslationDone.lower(value)
+}
+
+
+public struct LyricsTranslationError: Equatable, Hashable {
+    public var trackId: String
+    public var error: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(trackId: String, error: String) {
+        self.trackId = trackId
+        self.error = error
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension LyricsTranslationError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLyricsTranslationError: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LyricsTranslationError {
+        return
+            try LyricsTranslationError(
+                trackId: FfiConverterString.read(from: &buf), 
+                error: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LyricsTranslationError, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.trackId, into: &buf)
+        FfiConverterString.write(value.error, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLyricsTranslationError_lift(_ buf: RustBuffer) throws -> LyricsTranslationError {
+    return try FfiConverterTypeLyricsTranslationError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLyricsTranslationError_lower(_ value: LyricsTranslationError) -> RustBuffer {
+    return FfiConverterTypeLyricsTranslationError.lower(value)
+}
+
+
+public struct LyricsTranslationProgress: Equatable, Hashable {
+    public var trackId: String
+    public var bytes: Number
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(trackId: String, bytes: Number) {
+        self.trackId = trackId
+        self.bytes = bytes
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension LyricsTranslationProgress: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLyricsTranslationProgress: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LyricsTranslationProgress {
+        return
+            try LyricsTranslationProgress(
+                trackId: FfiConverterString.read(from: &buf), 
+                bytes: FfiConverterTypeNumber.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LyricsTranslationProgress, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.trackId, into: &buf)
+        FfiConverterTypeNumber.write(value.bytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLyricsTranslationProgress_lift(_ buf: RustBuffer) throws -> LyricsTranslationProgress {
+    return try FfiConverterTypeLyricsTranslationProgress.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLyricsTranslationProgress_lower(_ value: LyricsTranslationProgress) -> RustBuffer {
+    return FfiConverterTypeLyricsTranslationProgress.lower(value)
+}
+
+
+/**
+ * UTF-16 range with uniform emphasis; `marks` bit 0 is emphasis, bit 1 strong.
+ */
+public struct MarkRun: Equatable, Hashable {
+    public var start: Number
+    public var len: Number
+    public var marks: Number
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(start: Number, len: Number, marks: Number) {
+        self.start = start
+        self.len = len
+        self.marks = marks
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MarkRun: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMarkRun: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MarkRun {
+        return
+            try MarkRun(
+                start: FfiConverterTypeNumber.read(from: &buf), 
+                len: FfiConverterTypeNumber.read(from: &buf), 
+                marks: FfiConverterTypeNumber.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MarkRun, into buf: inout [UInt8]) {
+        FfiConverterTypeNumber.write(value.start, into: &buf)
+        FfiConverterTypeNumber.write(value.len, into: &buf)
+        FfiConverterTypeNumber.write(value.marks, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMarkRun_lift(_ buf: RustBuffer) throws -> MarkRun {
+    return try FfiConverterTypeMarkRun.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMarkRun_lower(_ value: MarkRun) -> RustBuffer {
+    return FfiConverterTypeMarkRun.lower(value)
+}
+
+
+public struct ModelInfo: Equatable, Hashable {
+    public var id: String
+    public var name: String
+    public var provider: TranslationProvider?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, name: String, provider: TranslationProvider?) {
+        self.id = id
+        self.name = name
+        self.provider = provider
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ModelInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeModelInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ModelInfo {
+        return
+            try ModelInfo(
+                id: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                provider: FfiConverterOptionTypeTranslationProvider.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ModelInfo, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterOptionTypeTranslationProvider.write(value.provider, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeModelInfo_lift(_ buf: RustBuffer) throws -> ModelInfo {
+    return try FfiConverterTypeModelInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeModelInfo_lower(_ value: ModelInfo) -> RustBuffer {
+    return FfiConverterTypeModelInfo.lower(value)
+}
+
+
+public struct NowPlaying: Equatable, Hashable {
+    public var state: PlayerState
+    public var trackId: String?
+    public var name: String?
+    public var artist: String?
+    public var album: String?
+    public var positionMs: Number?
+    public var durationMs: Number?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(state: PlayerState, trackId: String?, name: String?, artist: String?, album: String?, positionMs: Number?, durationMs: Number?) {
+        self.state = state
+        self.trackId = trackId
+        self.name = name
+        self.artist = artist
+        self.album = album
+        self.positionMs = positionMs
+        self.durationMs = durationMs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension NowPlaying: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNowPlaying: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NowPlaying {
+        return
+            try NowPlaying(
+                state: FfiConverterTypePlayerState.read(from: &buf), 
+                trackId: FfiConverterOptionString.read(from: &buf), 
+                name: FfiConverterOptionString.read(from: &buf), 
+                artist: FfiConverterOptionString.read(from: &buf), 
+                album: FfiConverterOptionString.read(from: &buf), 
+                positionMs: FfiConverterOptionTypeNumber.read(from: &buf), 
+                durationMs: FfiConverterOptionTypeNumber.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NowPlaying, into buf: inout [UInt8]) {
+        FfiConverterTypePlayerState.write(value.state, into: &buf)
+        FfiConverterOptionString.write(value.trackId, into: &buf)
+        FfiConverterOptionString.write(value.name, into: &buf)
+        FfiConverterOptionString.write(value.artist, into: &buf)
+        FfiConverterOptionString.write(value.album, into: &buf)
+        FfiConverterOptionTypeNumber.write(value.positionMs, into: &buf)
+        FfiConverterOptionTypeNumber.write(value.durationMs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNowPlaying_lift(_ buf: RustBuffer) throws -> NowPlaying {
+    return try FfiConverterTypeNowPlaying.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNowPlaying_lower(_ value: NowPlaying) -> RustBuffer {
+    return FfiConverterTypeNowPlaying.lower(value)
+}
+
+
+public struct ParagraphText: Equatable, Hashable {
+    public var id: Number
+    public var text: String
+    public var runs: [MarkRun]
+    public var words: [WordRange]
+    public var translated: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: Number, text: String, runs: [MarkRun], words: [WordRange], translated: Bool) {
+        self.id = id
+        self.text = text
+        self.runs = runs
+        self.words = words
+        self.translated = translated
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ParagraphText: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeParagraphText: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ParagraphText {
+        return
+            try ParagraphText(
+                id: FfiConverterTypeNumber.read(from: &buf), 
+                text: FfiConverterString.read(from: &buf), 
+                runs: FfiConverterSequenceTypeMarkRun.read(from: &buf), 
+                words: FfiConverterSequenceTypeWordRange.read(from: &buf), 
+                translated: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ParagraphText, into buf: inout [UInt8]) {
+        FfiConverterTypeNumber.write(value.id, into: &buf)
+        FfiConverterString.write(value.text, into: &buf)
+        FfiConverterSequenceTypeMarkRun.write(value.runs, into: &buf)
+        FfiConverterSequenceTypeWordRange.write(value.words, into: &buf)
+        FfiConverterBool.write(value.translated, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeParagraphText_lift(_ buf: RustBuffer) throws -> ParagraphText {
+    return try FfiConverterTypeParagraphText.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeParagraphText_lower(_ value: ParagraphText) -> RustBuffer {
+    return FfiConverterTypeParagraphText.lower(value)
+}
+
+
+public struct ParagraphTexts: Equatable, Hashable {
+    /**
+     * ISO 639-3 code of the book's language.
+     */
+    public var language: String
+    public var paragraphs: [ParagraphText]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * ISO 639-3 code of the book's language.
+         */language: String, paragraphs: [ParagraphText]) {
+        self.language = language
+        self.paragraphs = paragraphs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ParagraphTexts: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeParagraphTexts: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ParagraphTexts {
+        return
+            try ParagraphTexts(
+                language: FfiConverterString.read(from: &buf), 
+                paragraphs: FfiConverterSequenceTypeParagraphText.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ParagraphTexts, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.language, into: &buf)
+        FfiConverterSequenceTypeParagraphText.write(value.paragraphs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeParagraphTexts_lift(_ buf: RustBuffer) throws -> ParagraphTexts {
+    return try FfiConverterTypeParagraphTexts.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeParagraphTexts_lower(_ value: ParagraphTexts) -> RustBuffer {
+    return FfiConverterTypeParagraphTexts.lower(value)
+}
+
+
+public struct ParagraphUpdated: Equatable, Hashable {
+    public var bookId: Uuid
+    public var paragraphId: Number
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(bookId: Uuid, paragraphId: Number) {
+        self.bookId = bookId
+        self.paragraphId = paragraphId
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ParagraphUpdated: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeParagraphUpdated: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ParagraphUpdated {
+        return
+            try ParagraphUpdated(
+                bookId: FfiConverterTypeUuid.read(from: &buf), 
+                paragraphId: FfiConverterTypeNumber.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ParagraphUpdated, into buf: inout [UInt8]) {
+        FfiConverterTypeUuid.write(value.bookId, into: &buf)
+        FfiConverterTypeNumber.write(value.paragraphId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeParagraphUpdated_lift(_ buf: RustBuffer) throws -> ParagraphUpdated {
+    return try FfiConverterTypeParagraphUpdated.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeParagraphUpdated_lower(_ value: ParagraphUpdated) -> RustBuffer {
+    return FfiConverterTypeParagraphUpdated.lower(value)
+}
+
+
+public struct PendingDevice: Equatable, Hashable {
+    public var deviceId: String
+    public var name: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(deviceId: String, name: String) {
+        self.deviceId = deviceId
+        self.name = name
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PendingDevice: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePendingDevice: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PendingDevice {
+        return
+            try PendingDevice(
+                deviceId: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PendingDevice, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.deviceId, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePendingDevice_lift(_ buf: RustBuffer) throws -> PendingDevice {
+    return try FfiConverterTypePendingDevice.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePendingDevice_lower(_ value: PendingDevice) -> RustBuffer {
+    return FfiConverterTypePendingDevice.lower(value)
+}
+
+
+public struct ProviderMeta: Equatable, Hashable {
+    public var id: TranslationProvider
+    public var name: String
+    public var defaultModel: String
+    public var apiKeyField: String
+    public var modelSelection: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: TranslationProvider, name: String, defaultModel: String, apiKeyField: String, modelSelection: String?) {
+        self.id = id
+        self.name = name
+        self.defaultModel = defaultModel
+        self.apiKeyField = apiKeyField
+        self.modelSelection = modelSelection
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ProviderMeta: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProviderMeta: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProviderMeta {
+        return
+            try ProviderMeta(
+                id: FfiConverterTypeTranslationProvider.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                defaultModel: FfiConverterString.read(from: &buf), 
+                apiKeyField: FfiConverterString.read(from: &buf), 
+                modelSelection: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ProviderMeta, into buf: inout [UInt8]) {
+        FfiConverterTypeTranslationProvider.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.defaultModel, into: &buf)
+        FfiConverterString.write(value.apiKeyField, into: &buf)
+        FfiConverterOptionString.write(value.modelSelection, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProviderMeta_lift(_ buf: RustBuffer) throws -> ProviderMeta {
+    return try FfiConverterTypeProviderMeta.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProviderMeta_lower(_ value: ProviderMeta) -> RustBuffer {
+    return FfiConverterTypeProviderMeta.lower(value)
+}
+
+
+public struct QueueSnapshot: Equatable, Hashable {
+    public var contextType: String?
+    public var currentlyPlayingId: String?
+    public var upcoming: [TrackMeta]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(contextType: String?, currentlyPlayingId: String?, upcoming: [TrackMeta]) {
+        self.contextType = contextType
+        self.currentlyPlayingId = currentlyPlayingId
+        self.upcoming = upcoming
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension QueueSnapshot: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeQueueSnapshot: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> QueueSnapshot {
+        return
+            try QueueSnapshot(
+                contextType: FfiConverterOptionString.read(from: &buf), 
+                currentlyPlayingId: FfiConverterOptionString.read(from: &buf), 
+                upcoming: FfiConverterSequenceTypeTrackMeta.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: QueueSnapshot, into buf: inout [UInt8]) {
+        FfiConverterOptionString.write(value.contextType, into: &buf)
+        FfiConverterOptionString.write(value.currentlyPlayingId, into: &buf)
+        FfiConverterSequenceTypeTrackMeta.write(value.upcoming, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeQueueSnapshot_lift(_ buf: RustBuffer) throws -> QueueSnapshot {
+    return try FfiConverterTypeQueueSnapshot.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeQueueSnapshot_lower(_ value: QueueSnapshot) -> RustBuffer {
+    return FfiConverterTypeQueueSnapshot.lower(value)
+}
+
+
+public struct SpotifyCdpStatus: Equatable, Hashable {
+    public var available: Bool
+    public var port: Number
+    public var hint: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(available: Bool, port: Number, hint: String?) {
+        self.available = available
+        self.port = port
+        self.hint = hint
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SpotifyCdpStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSpotifyCdpStatus: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SpotifyCdpStatus {
+        return
+            try SpotifyCdpStatus(
+                available: FfiConverterBool.read(from: &buf), 
+                port: FfiConverterTypeNumber.read(from: &buf), 
+                hint: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SpotifyCdpStatus, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.available, into: &buf)
+        FfiConverterTypeNumber.write(value.port, into: &buf)
+        FfiConverterOptionString.write(value.hint, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSpotifyCdpStatus_lift(_ buf: RustBuffer) throws -> SpotifyCdpStatus {
+    return try FfiConverterTypeSpotifyCdpStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSpotifyCdpStatus_lower(_ value: SpotifyCdpStatus) -> RustBuffer {
+    return FfiConverterTypeSpotifyCdpStatus.lower(value)
+}
+
+
+public struct SpotifyLoginAgentStatus: Equatable, Hashable {
+    public var installed: Bool
+    public var path: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(installed: Bool, path: String) {
+        self.installed = installed
+        self.path = path
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SpotifyLoginAgentStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSpotifyLoginAgentStatus: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SpotifyLoginAgentStatus {
+        return
+            try SpotifyLoginAgentStatus(
+                installed: FfiConverterBool.read(from: &buf), 
+                path: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SpotifyLoginAgentStatus, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.installed, into: &buf)
+        FfiConverterString.write(value.path, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSpotifyLoginAgentStatus_lift(_ buf: RustBuffer) throws -> SpotifyLoginAgentStatus {
+    return try FfiConverterTypeSpotifyLoginAgentStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSpotifyLoginAgentStatus_lower(_ value: SpotifyLoginAgentStatus) -> RustBuffer {
+    return FfiConverterTypeSpotifyLoginAgentStatus.lower(value)
+}
+
+
+public struct SpotifyWebStatus: Equatable, Hashable {
+    public var connected: Bool
+    public var premiumRequired: Bool
+    public var lastError: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(connected: Bool, premiumRequired: Bool, lastError: String?) {
+        self.connected = connected
+        self.premiumRequired = premiumRequired
+        self.lastError = lastError
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SpotifyWebStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSpotifyWebStatus: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SpotifyWebStatus {
+        return
+            try SpotifyWebStatus(
+                connected: FfiConverterBool.read(from: &buf), 
+                premiumRequired: FfiConverterBool.read(from: &buf), 
+                lastError: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SpotifyWebStatus, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.connected, into: &buf)
+        FfiConverterBool.write(value.premiumRequired, into: &buf)
+        FfiConverterOptionString.write(value.lastError, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSpotifyWebStatus_lift(_ buf: RustBuffer) throws -> SpotifyWebStatus {
+    return try FfiConverterTypeSpotifyWebStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSpotifyWebStatus_lower(_ value: SpotifyWebStatus) -> RustBuffer {
+    return FfiConverterTypeSpotifyWebStatus.lower(value)
+}
+
+
+public struct StoreIssues: Equatable, Hashable {
+    public var newerVersion: Number
+    public var unreadable: Number
+    public var strangers: Number
+    public var stalled: Bool
+    public var sharedIdentity: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(newerVersion: Number, unreadable: Number, strangers: Number, stalled: Bool, sharedIdentity: Bool) {
+        self.newerVersion = newerVersion
+        self.unreadable = unreadable
+        self.strangers = strangers
+        self.stalled = stalled
+        self.sharedIdentity = sharedIdentity
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension StoreIssues: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeStoreIssues: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> StoreIssues {
+        return
+            try StoreIssues(
+                newerVersion: FfiConverterTypeNumber.read(from: &buf), 
+                unreadable: FfiConverterTypeNumber.read(from: &buf), 
+                strangers: FfiConverterTypeNumber.read(from: &buf), 
+                stalled: FfiConverterBool.read(from: &buf), 
+                sharedIdentity: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: StoreIssues, into buf: inout [UInt8]) {
+        FfiConverterTypeNumber.write(value.newerVersion, into: &buf)
+        FfiConverterTypeNumber.write(value.unreadable, into: &buf)
+        FfiConverterTypeNumber.write(value.strangers, into: &buf)
+        FfiConverterBool.write(value.stalled, into: &buf)
+        FfiConverterBool.write(value.sharedIdentity, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStoreIssues_lift(_ buf: RustBuffer) throws -> StoreIssues {
+    return try FfiConverterTypeStoreIssues.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStoreIssues_lower(_ value: StoreIssues) -> RustBuffer {
+    return FfiConverterTypeStoreIssues.lower(value)
+}
+
+
+public struct SummaryProgress: Equatable, Hashable {
+    public var bookId: Uuid
+    public var current: Number
+    public var total: Number
+    public var status: String
+    public var error: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(bookId: Uuid, current: Number, total: Number, status: String, error: String?) {
+        self.bookId = bookId
+        self.current = current
+        self.total = total
+        self.status = status
+        self.error = error
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SummaryProgress: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSummaryProgress: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SummaryProgress {
+        return
+            try SummaryProgress(
+                bookId: FfiConverterTypeUuid.read(from: &buf), 
+                current: FfiConverterTypeNumber.read(from: &buf), 
+                total: FfiConverterTypeNumber.read(from: &buf), 
+                status: FfiConverterString.read(from: &buf), 
+                error: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SummaryProgress, into buf: inout [UInt8]) {
+        FfiConverterTypeUuid.write(value.bookId, into: &buf)
+        FfiConverterTypeNumber.write(value.current, into: &buf)
+        FfiConverterTypeNumber.write(value.total, into: &buf)
+        FfiConverterString.write(value.status, into: &buf)
+        FfiConverterOptionString.write(value.error, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSummaryProgress_lift(_ buf: RustBuffer) throws -> SummaryProgress {
+    return try FfiConverterTypeSummaryProgress.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSummaryProgress_lower(_ value: SummaryProgress) -> RustBuffer {
+    return FfiConverterTypeSummaryProgress.lower(value)
+}
+
+
+public struct SyncStatus: Equatable, Hashable {
+    public var state: SyncState
+    public var deviceId: String?
+    public var deviceCount: Number
+    public var connectedCount: Number
+    public var completion: Double?
+    public var lastError: String?
+    public var storeIssues: StoreIssues?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(state: SyncState, deviceId: String?, deviceCount: Number, connectedCount: Number, completion: Double?, lastError: String?, storeIssues: StoreIssues?) {
+        self.state = state
+        self.deviceId = deviceId
+        self.deviceCount = deviceCount
+        self.connectedCount = connectedCount
+        self.completion = completion
+        self.lastError = lastError
+        self.storeIssues = storeIssues
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SyncStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSyncStatus: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SyncStatus {
+        return
+            try SyncStatus(
+                state: FfiConverterTypeSyncState.read(from: &buf), 
+                deviceId: FfiConverterOptionString.read(from: &buf), 
+                deviceCount: FfiConverterTypeNumber.read(from: &buf), 
+                connectedCount: FfiConverterTypeNumber.read(from: &buf), 
+                completion: FfiConverterOptionDouble.read(from: &buf), 
+                lastError: FfiConverterOptionString.read(from: &buf), 
+                storeIssues: FfiConverterOptionTypeStoreIssues.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SyncStatus, into buf: inout [UInt8]) {
+        FfiConverterTypeSyncState.write(value.state, into: &buf)
+        FfiConverterOptionString.write(value.deviceId, into: &buf)
+        FfiConverterTypeNumber.write(value.deviceCount, into: &buf)
+        FfiConverterTypeNumber.write(value.connectedCount, into: &buf)
+        FfiConverterOptionDouble.write(value.completion, into: &buf)
+        FfiConverterOptionString.write(value.lastError, into: &buf)
+        FfiConverterOptionTypeStoreIssues.write(value.storeIssues, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSyncStatus_lift(_ buf: RustBuffer) throws -> SyncStatus {
+    return try FfiConverterTypeSyncStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSyncStatus_lower(_ value: SyncStatus) -> RustBuffer {
+    return FfiConverterTypeSyncStatus.lower(value)
+}
+
+
+public struct SystemDefinition: Equatable, Hashable {
+    public var definition: String
+    public var transcription: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(definition: String, transcription: String?) {
+        self.definition = definition
+        self.transcription = transcription
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SystemDefinition: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSystemDefinition: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SystemDefinition {
+        return
+            try SystemDefinition(
+                definition: FfiConverterString.read(from: &buf), 
+                transcription: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SystemDefinition, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.definition, into: &buf)
+        FfiConverterOptionString.write(value.transcription, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSystemDefinition_lift(_ buf: RustBuffer) throws -> SystemDefinition {
+    return try FfiConverterTypeSystemDefinition.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSystemDefinition_lower(_ value: SystemDefinition) -> RustBuffer {
+    return FfiConverterTypeSystemDefinition.lower(value)
+}
+
+
+public struct ThisDevice: Equatable, Hashable {
+    public var deviceId: String
+    public var name: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(deviceId: String, name: String?) {
+        self.deviceId = deviceId
+        self.name = name
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ThisDevice: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeThisDevice: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ThisDevice {
+        return
+            try ThisDevice(
+                deviceId: FfiConverterString.read(from: &buf), 
+                name: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ThisDevice, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.deviceId, into: &buf)
+        FfiConverterOptionString.write(value.name, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeThisDevice_lift(_ buf: RustBuffer) throws -> ThisDevice {
+    return try FfiConverterTypeThisDevice.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeThisDevice_lower(_ value: ThisDevice) -> RustBuffer {
+    return FfiConverterTypeThisDevice.lower(value)
+}
+
+
+public struct TrackLyricsState: Equatable, Hashable {
+    public var lyrics: Lyrics?
+    public var translation: LyricsTranslation?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(lyrics: Lyrics?, translation: LyricsTranslation?) {
+        self.lyrics = lyrics
+        self.translation = translation
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TrackLyricsState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTrackLyricsState: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TrackLyricsState {
+        return
+            try TrackLyricsState(
+                lyrics: FfiConverterOptionTypeLyrics.read(from: &buf), 
+                translation: FfiConverterOptionTypeLyricsTranslation.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TrackLyricsState, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeLyrics.write(value.lyrics, into: &buf)
+        FfiConverterOptionTypeLyricsTranslation.write(value.translation, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrackLyricsState_lift(_ buf: RustBuffer) throws -> TrackLyricsState {
+    return try FfiConverterTypeTrackLyricsState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrackLyricsState_lower(_ value: TrackLyricsState) -> RustBuffer {
+    return FfiConverterTypeTrackLyricsState.lower(value)
+}
+
+
+public struct TrackMeta: Equatable, Hashable {
+    public var id: String
+    public var name: String
+    public var artist: String
+    public var album: String?
+    public var durationMs: Number
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, name: String, artist: String, album: String?, durationMs: Number) {
+        self.id = id
+        self.name = name
+        self.artist = artist
+        self.album = album
+        self.durationMs = durationMs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TrackMeta: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTrackMeta: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TrackMeta {
+        return
+            try TrackMeta(
+                id: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                artist: FfiConverterString.read(from: &buf), 
+                album: FfiConverterOptionString.read(from: &buf), 
+                durationMs: FfiConverterTypeNumber.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TrackMeta, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.artist, into: &buf)
+        FfiConverterOptionString.write(value.album, into: &buf)
+        FfiConverterTypeNumber.write(value.durationMs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrackMeta_lift(_ buf: RustBuffer) throws -> TrackMeta {
+    return try FfiConverterTypeTrackMeta.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrackMeta_lower(_ value: TrackMeta) -> RustBuffer {
+    return FfiConverterTypeTrackMeta.lower(value)
+}
+
+
+public struct TranslationFinished: Equatable, Hashable {
+    public var bookId: Uuid
+    public var paragraphId: Number
+    public var requestId: Number
+    public var error: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(bookId: Uuid, paragraphId: Number, requestId: Number, error: String?) {
+        self.bookId = bookId
+        self.paragraphId = paragraphId
+        self.requestId = requestId
+        self.error = error
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TranslationFinished: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTranslationFinished: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TranslationFinished {
+        return
+            try TranslationFinished(
+                bookId: FfiConverterTypeUuid.read(from: &buf), 
+                paragraphId: FfiConverterTypeNumber.read(from: &buf), 
+                requestId: FfiConverterTypeNumber.read(from: &buf), 
+                error: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TranslationFinished, into buf: inout [UInt8]) {
+        FfiConverterTypeUuid.write(value.bookId, into: &buf)
+        FfiConverterTypeNumber.write(value.paragraphId, into: &buf)
+        FfiConverterTypeNumber.write(value.requestId, into: &buf)
+        FfiConverterOptionString.write(value.error, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationFinished_lift(_ buf: RustBuffer) throws -> TranslationFinished {
+    return try FfiConverterTypeTranslationFinished.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationFinished_lower(_ value: TranslationFinished) -> RustBuffer {
+    return FfiConverterTypeTranslationFinished.lower(value)
+}
+
+
+public struct TranslationProgress: Equatable, Hashable {
+    public var bookId: Uuid
+    public var paragraphId: Number
+    public var requestId: Number
+    public var progressChars: Number
+    public var expectedChars: Number
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(bookId: Uuid, paragraphId: Number, requestId: Number, progressChars: Number, expectedChars: Number) {
+        self.bookId = bookId
+        self.paragraphId = paragraphId
+        self.requestId = requestId
+        self.progressChars = progressChars
+        self.expectedChars = expectedChars
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TranslationProgress: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTranslationProgress: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TranslationProgress {
+        return
+            try TranslationProgress(
+                bookId: FfiConverterTypeUuid.read(from: &buf), 
+                paragraphId: FfiConverterTypeNumber.read(from: &buf), 
+                requestId: FfiConverterTypeNumber.read(from: &buf), 
+                progressChars: FfiConverterTypeNumber.read(from: &buf), 
+                expectedChars: FfiConverterTypeNumber.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TranslationProgress, into buf: inout [UInt8]) {
+        FfiConverterTypeUuid.write(value.bookId, into: &buf)
+        FfiConverterTypeNumber.write(value.paragraphId, into: &buf)
+        FfiConverterTypeNumber.write(value.requestId, into: &buf)
+        FfiConverterTypeNumber.write(value.progressChars, into: &buf)
+        FfiConverterTypeNumber.write(value.expectedChars, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationProgress_lift(_ buf: RustBuffer) throws -> TranslationProgress {
+    return try FfiConverterTypeTranslationProgress.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationProgress_lower(_ value: TranslationProgress) -> RustBuffer {
+    return FfiConverterTypeTranslationProgress.lower(value)
+}
+
+
+public struct TranslationStarted: Equatable, Hashable {
+    public var bookId: Uuid
+    public var paragraphId: Number
+    public var requestId: Number
+    public var expectedChars: Number
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(bookId: Uuid, paragraphId: Number, requestId: Number, expectedChars: Number) {
+        self.bookId = bookId
+        self.paragraphId = paragraphId
+        self.requestId = requestId
+        self.expectedChars = expectedChars
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TranslationStarted: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTranslationStarted: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TranslationStarted {
+        return
+            try TranslationStarted(
+                bookId: FfiConverterTypeUuid.read(from: &buf), 
+                paragraphId: FfiConverterTypeNumber.read(from: &buf), 
+                requestId: FfiConverterTypeNumber.read(from: &buf), 
+                expectedChars: FfiConverterTypeNumber.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TranslationStarted, into buf: inout [UInt8]) {
+        FfiConverterTypeUuid.write(value.bookId, into: &buf)
+        FfiConverterTypeNumber.write(value.paragraphId, into: &buf)
+        FfiConverterTypeNumber.write(value.requestId, into: &buf)
+        FfiConverterTypeNumber.write(value.expectedChars, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationStarted_lift(_ buf: RustBuffer) throws -> TranslationStarted {
+    return try FfiConverterTypeTranslationStarted.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationStarted_lower(_ value: TranslationStarted) -> RustBuffer {
+    return FfiConverterTypeTranslationStarted.lower(value)
+}
+
+
+public struct WordInfo: Equatable, Hashable {
+    public var original: String
+    public var note: String
+    public var isPunctuation: Bool
+    public var contextualTranslations: [String]
+    public var grammar: Grammar
+    public var fullSentenceTranslation: String
+    public var translationModel: String
+    public var sourceLanguage: String
+    public var canCreateCard: Bool
+    public var hasCard: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(original: String, note: String, isPunctuation: Bool, contextualTranslations: [String], grammar: Grammar, fullSentenceTranslation: String, translationModel: String, sourceLanguage: String, canCreateCard: Bool, hasCard: Bool) {
+        self.original = original
+        self.note = note
+        self.isPunctuation = isPunctuation
+        self.contextualTranslations = contextualTranslations
+        self.grammar = grammar
+        self.fullSentenceTranslation = fullSentenceTranslation
+        self.translationModel = translationModel
+        self.sourceLanguage = sourceLanguage
+        self.canCreateCard = canCreateCard
+        self.hasCard = hasCard
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension WordInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeWordInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> WordInfo {
+        return
+            try WordInfo(
+                original: FfiConverterString.read(from: &buf), 
+                note: FfiConverterString.read(from: &buf), 
+                isPunctuation: FfiConverterBool.read(from: &buf), 
+                contextualTranslations: FfiConverterSequenceString.read(from: &buf), 
+                grammar: FfiConverterTypeGrammar.read(from: &buf), 
+                fullSentenceTranslation: FfiConverterString.read(from: &buf), 
+                translationModel: FfiConverterString.read(from: &buf), 
+                sourceLanguage: FfiConverterString.read(from: &buf), 
+                canCreateCard: FfiConverterBool.read(from: &buf), 
+                hasCard: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: WordInfo, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.original, into: &buf)
+        FfiConverterString.write(value.note, into: &buf)
+        FfiConverterBool.write(value.isPunctuation, into: &buf)
+        FfiConverterSequenceString.write(value.contextualTranslations, into: &buf)
+        FfiConverterTypeGrammar.write(value.grammar, into: &buf)
+        FfiConverterString.write(value.fullSentenceTranslation, into: &buf)
+        FfiConverterString.write(value.translationModel, into: &buf)
+        FfiConverterString.write(value.sourceLanguage, into: &buf)
+        FfiConverterBool.write(value.canCreateCard, into: &buf)
+        FfiConverterBool.write(value.hasCard, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWordInfo_lift(_ buf: RustBuffer) throws -> WordInfo {
+    return try FfiConverterTypeWordInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWordInfo_lower(_ value: WordInfo) -> RustBuffer {
+    return FfiConverterTypeWordInfo.lower(value)
+}
+
+
+/**
+ * A word's UTF-16 range in its paragraph's text.
+ */
+public struct WordRange: Equatable, Hashable {
+    public var start: Number
+    public var len: Number
+    public var sentence: Number
+    public var word: Number
+    public var flatIndex: Number
+    public var translation: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(start: Number, len: Number, sentence: Number, word: Number, flatIndex: Number, translation: String?) {
+        self.start = start
+        self.len = len
+        self.sentence = sentence
+        self.word = word
+        self.flatIndex = flatIndex
+        self.translation = translation
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension WordRange: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeWordRange: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> WordRange {
+        return
+            try WordRange(
+                start: FfiConverterTypeNumber.read(from: &buf), 
+                len: FfiConverterTypeNumber.read(from: &buf), 
+                sentence: FfiConverterTypeNumber.read(from: &buf), 
+                word: FfiConverterTypeNumber.read(from: &buf), 
+                flatIndex: FfiConverterTypeNumber.read(from: &buf), 
+                translation: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: WordRange, into buf: inout [UInt8]) {
+        FfiConverterTypeNumber.write(value.start, into: &buf)
+        FfiConverterTypeNumber.write(value.len, into: &buf)
+        FfiConverterTypeNumber.write(value.sentence, into: &buf)
+        FfiConverterTypeNumber.write(value.word, into: &buf)
+        FfiConverterTypeNumber.write(value.flatIndex, into: &buf)
+        FfiConverterOptionString.write(value.translation, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWordRange_lift(_ buf: RustBuffer) throws -> WordRange {
+    return try FfiConverterTypeWordRange.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWordRange_lower(_ value: WordRange) -> RustBuffer {
+    return FfiConverterTypeWordRange.lower(value)
+}
+
+
+
+public enum AnkiSyncState: Equatable, Hashable {
+    
+    case idle
+    case syncing
+    case ok
+    case err
+    case unreachable
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AnkiSyncState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAnkiSyncState: FfiConverterRustBuffer {
+    typealias SwiftType = AnkiSyncState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AnkiSyncState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .idle
+        
+        case 2: return .syncing
+        
+        case 3: return .ok
+        
+        case 4: return .err
+        
+        case 5: return .unreachable
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: AnkiSyncState, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .idle:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .syncing:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .ok:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .err:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .unreachable:
+            writeInt(&buf, Int32(5))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAnkiSyncState_lift(_ buf: RustBuffer) throws -> AnkiSyncState {
+    return try FfiConverterTypeAnkiSyncState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAnkiSyncState_lower(_ value: AnkiSyncState) -> RustBuffer {
+    return FfiConverterTypeAnkiSyncState.lower(value)
+}
+
+
+
+
+public enum CardResult: Equatable, Hashable {
+    
+    case created
+    case alreadyExists
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CardResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCardResult: FfiConverterRustBuffer {
+    typealias SwiftType = CardResult
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CardResult {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .created
+        
+        case 2: return .alreadyExists
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CardResult, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .created:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .alreadyExists:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCardResult_lift(_ buf: RustBuffer) throws -> CardResult {
+    return try FfiConverterTypeCardResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCardResult_lower(_ value: CardResult) -> RustBuffer {
+    return FfiConverterTypeCardResult.lower(value)
+}
+
+
+
 public 
 enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
@@ -1132,6 +5270,1396 @@ public func FfiConverterTypeCoreError_lift(_ buf: RustBuffer) throws -> CoreErro
 public func FfiConverterTypeCoreError_lower(_ value: CoreError) -> RustBuffer {
     return FfiConverterTypeCoreError.lower(value)
 }
+
+
+/**
+ * Everything the core pushes to the app.
+ */
+
+public enum CoreEvent: Equatable, Hashable {
+    
+    case configUpdated
+    case libraryUpdated
+    case libraryImportProgress(progress: ImportProgress
+    )
+    case bookUpdated(bookId: Uuid
+    )
+    case bookDeleted(bookId: Uuid
+    )
+    case paragraphUpdated(event: ParagraphUpdated
+    )
+    case cardsUpdated
+    case translationStarted(event: TranslationStarted
+    )
+    case translationProgress(event: TranslationProgress
+    )
+    case translationFinished(event: TranslationFinished
+    )
+    case summaryGenerationProgress(event: SummaryProgress
+    )
+    case ankiSyncStatusChanged
+    case syncStatusChanged
+    case spotifyState(nowPlaying: NowPlaying
+    )
+    case spotifyQueue(snapshot: QueueSnapshot
+    )
+    case lyricsResolved(event: LyricsResolved
+    )
+    case lyricsTranslationProgress(event: LyricsTranslationProgress
+    )
+    case lyricsTranslationDone(event: LyricsTranslationDone
+    )
+    case lyricsTranslationError(event: LyricsTranslationError
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreEvent: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreEvent: FfiConverterRustBuffer {
+    typealias SwiftType = CoreEvent
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreEvent {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .configUpdated
+        
+        case 2: return .libraryUpdated
+        
+        case 3: return .libraryImportProgress(progress: try FfiConverterTypeImportProgress.read(from: &buf)
+        )
+        
+        case 4: return .bookUpdated(bookId: try FfiConverterTypeUuid.read(from: &buf)
+        )
+        
+        case 5: return .bookDeleted(bookId: try FfiConverterTypeUuid.read(from: &buf)
+        )
+        
+        case 6: return .paragraphUpdated(event: try FfiConverterTypeParagraphUpdated.read(from: &buf)
+        )
+        
+        case 7: return .cardsUpdated
+        
+        case 8: return .translationStarted(event: try FfiConverterTypeTranslationStarted.read(from: &buf)
+        )
+        
+        case 9: return .translationProgress(event: try FfiConverterTypeTranslationProgress.read(from: &buf)
+        )
+        
+        case 10: return .translationFinished(event: try FfiConverterTypeTranslationFinished.read(from: &buf)
+        )
+        
+        case 11: return .summaryGenerationProgress(event: try FfiConverterTypeSummaryProgress.read(from: &buf)
+        )
+        
+        case 12: return .ankiSyncStatusChanged
+        
+        case 13: return .syncStatusChanged
+        
+        case 14: return .spotifyState(nowPlaying: try FfiConverterTypeNowPlaying.read(from: &buf)
+        )
+        
+        case 15: return .spotifyQueue(snapshot: try FfiConverterTypeQueueSnapshot.read(from: &buf)
+        )
+        
+        case 16: return .lyricsResolved(event: try FfiConverterTypeLyricsResolved.read(from: &buf)
+        )
+        
+        case 17: return .lyricsTranslationProgress(event: try FfiConverterTypeLyricsTranslationProgress.read(from: &buf)
+        )
+        
+        case 18: return .lyricsTranslationDone(event: try FfiConverterTypeLyricsTranslationDone.read(from: &buf)
+        )
+        
+        case 19: return .lyricsTranslationError(event: try FfiConverterTypeLyricsTranslationError.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreEvent, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .configUpdated:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .libraryUpdated:
+            writeInt(&buf, Int32(2))
+        
+        
+        case let .libraryImportProgress(progress):
+            writeInt(&buf, Int32(3))
+            FfiConverterTypeImportProgress.write(progress, into: &buf)
+            
+        
+        case let .bookUpdated(bookId):
+            writeInt(&buf, Int32(4))
+            FfiConverterTypeUuid.write(bookId, into: &buf)
+            
+        
+        case let .bookDeleted(bookId):
+            writeInt(&buf, Int32(5))
+            FfiConverterTypeUuid.write(bookId, into: &buf)
+            
+        
+        case let .paragraphUpdated(event):
+            writeInt(&buf, Int32(6))
+            FfiConverterTypeParagraphUpdated.write(event, into: &buf)
+            
+        
+        case .cardsUpdated:
+            writeInt(&buf, Int32(7))
+        
+        
+        case let .translationStarted(event):
+            writeInt(&buf, Int32(8))
+            FfiConverterTypeTranslationStarted.write(event, into: &buf)
+            
+        
+        case let .translationProgress(event):
+            writeInt(&buf, Int32(9))
+            FfiConverterTypeTranslationProgress.write(event, into: &buf)
+            
+        
+        case let .translationFinished(event):
+            writeInt(&buf, Int32(10))
+            FfiConverterTypeTranslationFinished.write(event, into: &buf)
+            
+        
+        case let .summaryGenerationProgress(event):
+            writeInt(&buf, Int32(11))
+            FfiConverterTypeSummaryProgress.write(event, into: &buf)
+            
+        
+        case .ankiSyncStatusChanged:
+            writeInt(&buf, Int32(12))
+        
+        
+        case .syncStatusChanged:
+            writeInt(&buf, Int32(13))
+        
+        
+        case let .spotifyState(nowPlaying):
+            writeInt(&buf, Int32(14))
+            FfiConverterTypeNowPlaying.write(nowPlaying, into: &buf)
+            
+        
+        case let .spotifyQueue(snapshot):
+            writeInt(&buf, Int32(15))
+            FfiConverterTypeQueueSnapshot.write(snapshot, into: &buf)
+            
+        
+        case let .lyricsResolved(event):
+            writeInt(&buf, Int32(16))
+            FfiConverterTypeLyricsResolved.write(event, into: &buf)
+            
+        
+        case let .lyricsTranslationProgress(event):
+            writeInt(&buf, Int32(17))
+            FfiConverterTypeLyricsTranslationProgress.write(event, into: &buf)
+            
+        
+        case let .lyricsTranslationDone(event):
+            writeInt(&buf, Int32(18))
+            FfiConverterTypeLyricsTranslationDone.write(event, into: &buf)
+            
+        
+        case let .lyricsTranslationError(event):
+            writeInt(&buf, Int32(19))
+            FfiConverterTypeLyricsTranslationError.write(event, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreEvent_lift(_ buf: RustBuffer) throws -> CoreEvent {
+    return try FfiConverterTypeCoreEvent.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreEvent_lower(_ value: CoreEvent) -> RustBuffer {
+    return FfiConverterTypeCoreEvent.lower(value)
+}
+
+
+
+
+public enum PlayerState: Equatable, Hashable {
+    
+    case playing
+    case paused
+    case stopped
+    case notRunning
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PlayerState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePlayerState: FfiConverterRustBuffer {
+    typealias SwiftType = PlayerState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PlayerState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .playing
+        
+        case 2: return .paused
+        
+        case 3: return .stopped
+        
+        case 4: return .notRunning
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: PlayerState, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .playing:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .paused:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .stopped:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .notRunning:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePlayerState_lift(_ buf: RustBuffer) throws -> PlayerState {
+    return try FfiConverterTypePlayerState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePlayerState_lower(_ value: PlayerState) -> RustBuffer {
+    return FfiConverterTypePlayerState.lower(value)
+}
+
+
+
+
+public enum SyncState: Equatable, Hashable {
+    
+    case disabled
+    case starting
+    case online
+    case syncing
+    case error
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension SyncState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSyncState: FfiConverterRustBuffer {
+    typealias SwiftType = SyncState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SyncState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .disabled
+        
+        case 2: return .starting
+        
+        case 3: return .online
+        
+        case 4: return .syncing
+        
+        case 5: return .error
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: SyncState, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .disabled:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .starting:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .online:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .syncing:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .error:
+            writeInt(&buf, Int32(5))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSyncState_lift(_ buf: RustBuffer) throws -> SyncState {
+    return try FfiConverterTypeSyncState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSyncState_lower(_ value: SyncState) -> RustBuffer {
+    return FfiConverterTypeSyncState.lower(value)
+}
+
+
+
+
+public enum TranslationProvider: Equatable, Hashable {
+    
+    case google
+    case openai
+    case deepseek
+    case zai
+    case openrouter
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension TranslationProvider: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTranslationProvider: FfiConverterRustBuffer {
+    typealias SwiftType = TranslationProvider
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TranslationProvider {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .google
+        
+        case 2: return .openai
+        
+        case 3: return .deepseek
+        
+        case 4: return .zai
+        
+        case 5: return .openrouter
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: TranslationProvider, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .google:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .openai:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .deepseek:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .zai:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .openrouter:
+            writeInt(&buf, Int32(5))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationProvider_lift(_ buf: RustBuffer) throws -> TranslationProvider {
+    return try FfiConverterTypeTranslationProvider.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationProvider_lower(_ value: TranslationProvider) -> RustBuffer {
+    return FfiConverterTypeTranslationProvider.lower(value)
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionDouble: FfiConverterRustBuffer {
+    typealias SwiftType = Double?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterDouble.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterDouble.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
+    typealias SwiftType = String?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeAnkiSyncReport: FfiConverterRustBuffer {
+    typealias SwiftType = AnkiSyncReport?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeAnkiSyncReport.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeAnkiSyncReport.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeBookReadingState: FfiConverterRustBuffer {
+    typealias SwiftType = BookReadingState?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeBookReadingState.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeBookReadingState.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeLyrics: FfiConverterRustBuffer {
+    typealias SwiftType = Lyrics?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeLyrics.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeLyrics.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeLyricsTranslation: FfiConverterRustBuffer {
+    typealias SwiftType = LyricsTranslation?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeLyricsTranslation.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeLyricsTranslation.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeNowPlaying: FfiConverterRustBuffer {
+    typealias SwiftType = NowPlaying?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeNowPlaying.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeNowPlaying.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeQueueSnapshot: FfiConverterRustBuffer {
+    typealias SwiftType = QueueSnapshot?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeQueueSnapshot.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeQueueSnapshot.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeStoreIssues: FfiConverterRustBuffer {
+    typealias SwiftType = StoreIssues?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeStoreIssues.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeStoreIssues.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeSystemDefinition: FfiConverterRustBuffer {
+    typealias SwiftType = SystemDefinition?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeSystemDefinition.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeSystemDefinition.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeThisDevice: FfiConverterRustBuffer {
+    typealias SwiftType = ThisDevice?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeThisDevice.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeThisDevice.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeWordInfo: FfiConverterRustBuffer {
+    typealias SwiftType = WordInfo?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeWordInfo.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeWordInfo.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeTranslationProvider: FfiConverterRustBuffer {
+    typealias SwiftType = TranslationProvider?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeTranslationProvider.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeTranslationProvider.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeNumber: FfiConverterRustBuffer {
+    typealias SwiftType = Number?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeNumber.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeNumber.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceBool: FfiConverterRustBuffer {
+    typealias SwiftType = [Bool]
+
+    public static func write(_ value: [Bool], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterBool.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Bool] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Bool]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterBool.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
+    typealias SwiftType = [String]
+
+    public static func write(_ value: [String], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterString.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [String]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeActiveTranslation: FfiConverterRustBuffer {
+    typealias SwiftType = [ActiveTranslation]
+
+    public static func write(_ value: [ActiveTranslation], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeActiveTranslation.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ActiveTranslation] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ActiveTranslation]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeActiveTranslation.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeBookMeta: FfiConverterRustBuffer {
+    typealias SwiftType = [BookMeta]
+
+    public static func write(_ value: [BookMeta], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeBookMeta.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [BookMeta] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [BookMeta]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeBookMeta.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeChapterMeta: FfiConverterRustBuffer {
+    typealias SwiftType = [ChapterMeta]
+
+    public static func write(_ value: [ChapterMeta], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeChapterMeta.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ChapterMeta] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ChapterMeta]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeChapterMeta.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeDeviceEntry: FfiConverterRustBuffer {
+    typealias SwiftType = [DeviceEntry]
+
+    public static func write(_ value: [DeviceEntry], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeDeviceEntry.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [DeviceEntry] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [DeviceEntry]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeDeviceEntry.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeEpubChapterSummary: FfiConverterRustBuffer {
+    typealias SwiftType = [EpubChapterSummary]
+
+    public static func write(_ value: [EpubChapterSummary], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeEpubChapterSummary.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [EpubChapterSummary] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [EpubChapterSummary]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeEpubChapterSummary.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeGloss: FfiConverterRustBuffer {
+    typealias SwiftType = [Gloss]
+
+    public static func write(_ value: [Gloss], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeGloss.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Gloss] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Gloss]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeGloss.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeLanguageInfo: FfiConverterRustBuffer {
+    typealias SwiftType = [LanguageInfo]
+
+    public static func write(_ value: [LanguageInfo], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeLanguageInfo.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [LanguageInfo] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [LanguageInfo]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeLanguageInfo.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeLyricsLine: FfiConverterRustBuffer {
+    typealias SwiftType = [LyricsLine]
+
+    public static func write(_ value: [LyricsLine], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeLyricsLine.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [LyricsLine] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [LyricsLine]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeLyricsLine.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeLyricsLineTranslation: FfiConverterRustBuffer {
+    typealias SwiftType = [LyricsLineTranslation]
+
+    public static func write(_ value: [LyricsLineTranslation], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeLyricsLineTranslation.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [LyricsLineTranslation] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [LyricsLineTranslation]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeLyricsLineTranslation.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMarkRun: FfiConverterRustBuffer {
+    typealias SwiftType = [MarkRun]
+
+    public static func write(_ value: [MarkRun], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMarkRun.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MarkRun] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MarkRun]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMarkRun.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeModelInfo: FfiConverterRustBuffer {
+    typealias SwiftType = [ModelInfo]
+
+    public static func write(_ value: [ModelInfo], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeModelInfo.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ModelInfo] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ModelInfo]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeModelInfo.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeParagraphText: FfiConverterRustBuffer {
+    typealias SwiftType = [ParagraphText]
+
+    public static func write(_ value: [ParagraphText], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeParagraphText.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ParagraphText] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ParagraphText]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeParagraphText.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypePendingDevice: FfiConverterRustBuffer {
+    typealias SwiftType = [PendingDevice]
+
+    public static func write(_ value: [PendingDevice], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypePendingDevice.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [PendingDevice] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [PendingDevice]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypePendingDevice.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeProviderMeta: FfiConverterRustBuffer {
+    typealias SwiftType = [ProviderMeta]
+
+    public static func write(_ value: [ProviderMeta], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeProviderMeta.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ProviderMeta] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ProviderMeta]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeProviderMeta.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeTrackMeta: FfiConverterRustBuffer {
+    typealias SwiftType = [TrackMeta]
+
+    public static func write(_ value: [TrackMeta], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeTrackMeta.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [TrackMeta] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [TrackMeta]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeTrackMeta.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeWordRange: FfiConverterRustBuffer {
+    typealias SwiftType = [WordRange]
+
+    public static func write(_ value: [WordRange], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeWordRange.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [WordRange] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [WordRange]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeWordRange.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeNumber: FfiConverterRustBuffer {
+    typealias SwiftType = [Number]
+
+    public static func write(_ value: [Number], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeNumber.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Number] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Number]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeNumber.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+
+
+
+public typealias Number = Int
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNumber: FfiConverter {
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Number {
+        let builtinValue = try FfiConverterInt64.read(from: &buf)
+        return Int(builtinValue)
+    }
+
+    public static func write(_ value: Number, into buf: inout [UInt8]) {
+        let builtinValue = Int64(value)
+        return FfiConverterInt64.write(builtinValue, into: &buf)
+    }
+
+    public static func lift(_ value: Int64) throws -> Number {
+        let builtinValue = try FfiConverterInt64.lift(value)
+        return Int(builtinValue)
+    }
+
+    public static func lower(_ value: Number) -> Int64 {
+        let builtinValue = Int64(value)
+        return FfiConverterInt64.lower(builtinValue)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNumber_lift(_ value: Int64) throws -> Number {
+    return try FfiConverterTypeNumber.lift(value)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNumber_lower(_ value: Number) -> Int64 {
+    return FfiConverterTypeNumber.lower(value)
+}
+
+
+
+
+
+public typealias Uuid = UUID
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUuid: FfiConverter {
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Uuid {
+        let builtinValue = try FfiConverterString.read(from: &buf)
+        return UUID(uuidString: builtinValue)!
+    }
+
+    public static func write(_ value: Uuid, into buf: inout [UInt8]) {
+        let builtinValue = value.uuidString.lowercased()
+        return FfiConverterString.write(builtinValue, into: &buf)
+    }
+
+    public static func lift(_ value: RustBuffer) throws -> Uuid {
+        let builtinValue = try FfiConverterString.lift(value)
+        return UUID(uuidString: builtinValue)!
+    }
+
+    public static func lower(_ value: Uuid) -> RustBuffer {
+        let builtinValue = value.uuidString.lowercased()
+        return FfiConverterString.lower(builtinValue)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUuid_lift(_ value: RustBuffer) throws -> Uuid {
+    return try FfiConverterTypeUuid.lift(value)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUuid_lower(_ value: Uuid) -> RustBuffer {
+    return FfiConverterTypeUuid.lower(value)
+}
+
 private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
 private let UNIFFI_RUST_FUTURE_POLL_WAKE: Int8 = 1
 
@@ -1196,16 +6724,181 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_flts_ffi_checksum_method_fltscore_invoke() != 65475) {
+    if (uniffi_flts_ffi_checksum_method_epubpreview_chapters() != 62138) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_epubpreview_language() != 20136) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_epubpreview_title() != 46432) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_create_card_for_word() != 12281) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_delete_book() != 31139) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_get_anki_sync_status() != 61929) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_get_book_chapter_paragraph_ids() != 36867) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_get_book_reading_state() != 41800) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_get_book_summary_status() != 28556) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_get_config() != 23053) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_get_languages() != 59643) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_get_library_root() != 10016) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_get_models() != 907) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_get_now_playing() != 58288) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_get_paragraph_texts() != 47310) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_get_sync_status() != 29111) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_get_system_definition() != 63140) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_get_track_lyrics_state() != 11354) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_get_translation_providers() != 9392) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_get_word_info() != 37411) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_import_epub() != 29857) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_import_plain_text() != 12538) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_list_book_chapters() != 64320) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_list_books() != 12418) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_list_translation_activity() != 47585) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_move_book() != 23628) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_parse_epub() != 60770) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_parse_language_id() != 1129) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_purge_gemini_caches() != 15241) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_save_book_reading_state() != 22508) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flts_ffi_checksum_method_fltscore_shutdown() != 39021) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_flts_ffi_checksum_method_fltscore_spotify_cdp_status() != 13457) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_spotify_install_login_agent() != 58052) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_spotify_login_agent_status() != 36228) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_spotify_remove_login_agent() != 34822) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_spotify_restart_with_devtools() != 41983) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_spotify_web_connect() != 14660) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_spotify_web_disconnect() != 37177) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_spotify_web_queue() != 2119) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_spotify_web_status() != 23881) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_start_spotify_watcher() != 6939) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_stop_spotify_watcher() != 35110) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_sync_add_device() != 11299) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_sync_anki_now() != 40871) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_sync_keep_identity() != 25122) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_sync_list_devices() != 37335) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_sync_list_pending() != 3151) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_sync_remove_device() != 13045) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_sync_reset_identity() != 8139) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_sync_set_device_name() != 40175) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_sync_set_enabled() != 27760) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_sync_this_device() != 4114) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_sync_wake() != 36913) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_sync_web_ui_url() != 48328) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_translate_chapter() != 56584) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_translate_paragraph() != 30310) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_method_fltscore_update_config() != 50769) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_flts_ffi_checksum_method_maintask_run() != 15785) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flts_ffi_checksum_method_shell_on_event() != 43975) {
+    if (uniffi_flts_ffi_checksum_method_shell_on_event() != 46872) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flts_ffi_checksum_method_shell_run_on_main() != 16026) {

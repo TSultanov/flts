@@ -28,8 +28,8 @@ final class WordStore {
         self.core = core
         self.events = events
         tokens.append(
-            events.on("book_updated", as: UUID.self) { [weak self] id in
-                guard let self, id == self.selection?.bookId else { return }
+            events.on { [weak self] event in
+                guard let self, case .bookUpdated(let id) = event, id == selection?.bookId else { return }
                 Task { await self.reload() }
             })
     }
@@ -55,12 +55,8 @@ final class WordStore {
         loading = true
         defer { if gen == generation { loading = false } }
         do {
-            let info: WordInfo? = try await core.invoke(
-                "get_word_info",
-                [
-                    "bookId": .uuid(ref.bookId), "paragraphId": .int(ref.paragraphId),
-                    "sentenceId": .int(ref.sentence), "wordId": .int(ref.word),
-                ], as: WordInfo?.self)
+            let info = try await core.getWordInfo(
+                bookId: ref.bookId, paragraphId: ref.paragraphId, sentenceId: ref.sentence, wordId: ref.word)
             guard gen == generation else { return }
             self.info = info
             if let info, info.hasCard, cardState == .idle { cardState = .exists }
@@ -75,12 +71,9 @@ final class WordStore {
 
     private func loadDefinition(_ info: WordInfo, gen: Int) async {
         let word = info.original
-        let def = try? await core.invoke(
-            "get_system_definition",
-            [
-                "word": .string(word), "sourceLang": .string(info.sourceLanguage.isEmpty ? "en" : info.sourceLanguage),
-                "targetLang": .string(targetLanguage.isEmpty ? "en" : targetLanguage),
-            ], as: SystemDefinition?.self)
+        let def = try? await core.getSystemDefinition(
+            word: word, sourceLang: info.sourceLanguage.isEmpty ? "en" : info.sourceLanguage,
+            targetLang: targetLanguage.isEmpty ? "en" : targetLanguage)
         guard gen == generation else { return }
         definition = def ?? nil
     }
@@ -89,13 +82,9 @@ final class WordStore {
         guard let ref = selection else { return }
         cardState = .creating
         do {
-            let result: String = try await core.invoke(
-                "create_card_for_word",
-                [
-                    "bookId": .uuid(ref.bookId), "paragraphId": .int(ref.paragraphId),
-                    "sentenceId": .int(ref.sentence), "wordId": .int(ref.word),
-                ])
-            cardState = result == "alreadyExists" ? .exists : .created
+            let result = try await core.createCardForWord(
+                bookId: ref.bookId, paragraphId: ref.paragraphId, sentenceId: ref.sentence, wordId: ref.word)
+            cardState = result == .alreadyExists ? .exists : .created
         } catch {
             cardState = .failed(error.localizedDescription)
         }

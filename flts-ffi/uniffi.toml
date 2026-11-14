@@ -1,0 +1,10 @@
+[bindings.swift.custom_types.Uuid]
+type_name = "UUID"
+imports = ["Foundation"]
+lift = "UUID(uuidString: {})!"
+lower = "{}.uuidString.lowercased()"
+
+[bindings.swift.custom_types.Number]
+type_name = "Int"
+lift = "Int({})"
+lower = "Int64({})"

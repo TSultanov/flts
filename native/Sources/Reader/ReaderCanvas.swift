@@ -15,6 +15,8 @@ protocol ReaderCanvasDelegate: AnyObject {
     func reader(_ canvas: ReaderCanvas, translate paragraphId: Int, useCache: Bool)
     func reader(_ canvas: ReaderCanvas, movedTo page: Int, of count: Int)
     func readerTranslationProgress(_ canvas: ReaderCanvas, paragraphId: Int) -> Double?
+    /// A plain key the reader does not use itself; true if handled.
+    func readerToggle(_ canvas: ReaderCanvas, key: String) -> Bool
 }
 
 /// Draws a spread of pages from one `ChapterTextLayout` and turns clicks,
@@ -41,6 +43,12 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
     private var columnWidth: CGFloat = 400
     private var laidOutSize: CGSize = .zero
     private var pendingAnchor: ReadingAnchor?
+    /// Where the reader is, as last set by the reader (opening, flipping).
+    /// Relayouts restore to it rather than to whatever line they snapped to,
+    /// so resizes and sidebar animations cannot walk the position.
+    private var sticky: ReadingAnchor?
+    /// Full layouts started off the main thread, for tests.
+    private(set) var fullLayoutsStarted = 0
     private var swipeAccumulator: CGFloat = 0
 
     /// A dragged text selection, as a storage range of the current layout.
@@ -88,6 +96,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         self.paragraphs = paragraphs
         self.typography = typography
         pendingAnchor = anchor
+        sticky = anchor
         laidOutSize = .zero
         needsLayout = true
         needsDisplay = true
@@ -109,7 +118,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         if isProvisional {
             // The background layout predates these; redo both.
             pendingChanges = [:]
-            relayout(keeping: currentAnchor())
+            relayout(keeping: sticky ?? currentAnchor())
             return
         }
         scheduleDrain()
@@ -150,7 +159,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
     func setTypography(_ typography: ReaderTypography) {
         guard typography != self.typography else { return }
         self.typography = typography
-        relayout(keeping: currentAnchor())
+        relayout(keeping: sticky ?? currentAnchor())
     }
 
     func currentAnchor() -> ReadingAnchor? {
@@ -167,7 +176,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
     override func layout() {
         super.layout()
         if bounds.size != laidOutSize {
-            relayout(keeping: laidOutSize == .zero ? pendingAnchor : currentAnchor())
+            relayout(keeping: laidOutSize == .zero ? pendingAnchor : (sticky ?? currentAnchor()))
         }
     }
 
@@ -221,6 +230,16 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
             onFullLayout?()
             return
         }
+        // Wait for relayouts to settle (sidebar animations, resizes) so one
+        // full layout runs, not one per frame.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self, gen == self.generation else { return }
+            self.startFullLayout(generation: gen, pageHeight: pageHeight)
+        }
+    }
+
+    private func startFullLayout(generation gen: Int, pageHeight: CGFloat) {
+        fullLayoutsStarted += 1
         let (order, paragraphs, typography, width) = (self.order, self.paragraphs, self.typography, columnWidth)
         Task.detached(priority: .userInitiated) {
             let full = ChapterTextLayout()
@@ -234,7 +253,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
 
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
-        if isProvisional { relayout(keeping: currentAnchor()) }
+        if isProvisional { relayout(keeping: sticky ?? currentAnchor()) }
     }
 
     /// Swaps in the full layout, re-cut so the visible line still starts the page.
@@ -327,7 +346,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         style.lineBreakMode = .byClipping
         for key in revealed {
             guard let p = text.paragraphs[key.paragraphId], key.wordIndex < p.words.count,
-                let translation = p.words[key.wordIndex].t, !translation.isEmpty,
+                let translation = p.words[key.wordIndex].translation, !translation.isEmpty,
                 let range = text.wordRange(paragraphId: key.paragraphId, wordIndex: key.wordIndex),
                 let first = text.frames(of: range).first,
                 first.minY >= page.top - 1, first.maxY <= page.bottom + 1
@@ -646,6 +665,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         }
         spreadStart = target
         textSelection = nil
+        sticky = currentAnchor()
         needsDisplay = true
         delegate?.reader(self, movedTo: spreadStart, of: text.pages.count)
         NSAccessibility.post(element: self, notification: .valueChanged)
@@ -661,8 +681,13 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         case .home?: go(toPage: 0)
         case .end?: go(toPage: text.pages.count - 1)
         default:
-            if event.charactersIgnoringModifiers == " " {
+            let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
+            if key == " " {
                 event.modifierFlags.contains(.shift) ? previousSpread() : nextSpread()
+            } else if event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+                delegate?.readerToggle(self, key: key) == true
+            {
+                return
             } else {
                 super.keyDown(with: event)
             }

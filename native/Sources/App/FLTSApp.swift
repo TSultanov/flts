@@ -88,8 +88,15 @@ struct AppCommands: Commands {
             Button("Translate Chapter") { book?.translateChapter() }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
                 .disabled(book == nil)
-            Button("Show Word Panel") { book?.toggleInspector() }
-                .keyboardShortcut("i", modifiers: [.command, .option])
+            Button("Show Chapters") { book?.toggleChapters() }
+                .keyboardShortcut("c", modifiers: [.command, .control])
+                .disabled(book == nil)
+            Button("Show Word Details") { book?.toggleWordPanel() }
+                .keyboardShortcut("w", modifiers: [.command, .control])
+                .disabled(book == nil)
+            Divider()
+            Button("Library") { model.selectedBookId = nil }
+                .keyboardShortcut("l", modifiers: [.command, .option])
                 .disabled(book == nil)
         }
         CommandGroup(after: .windowList) {
@@ -104,7 +111,8 @@ struct AppCommands: Commands {
 
 struct BookActions {
     let translateChapter: () -> Void
-    let toggleInspector: () -> Void
+    let toggleWordPanel: () -> Void
+    let toggleChapters: () -> Void
 }
 
 extension FocusedValues {

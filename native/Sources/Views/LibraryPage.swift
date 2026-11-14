@@ -1,39 +1,67 @@
 import SwiftUI
 
-struct LibrarySidebar: View {
+/// The library as its own page: folders and books; opening a book leaves it.
+struct LibraryPage: View {
     @Environment(AppModel.self) private var model
-    @State private var moving: BookMeta?
-    @State private var deleting: BookMeta?
+    @State private var selection: Set<UUID> = []
+    @State private var moving: [BookMeta] = []
+    @State private var deleting: [BookMeta] = []
     @State private var creatingFolder = false
     @State private var expanded: Set<[String]> = []
 
     var body: some View {
         @Bindable var model = model
-        List(selection: $model.selectedBookId) {
-            if let progress = model.library.importProgress {
-                Section {
-                    ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1))) {
-                        Text("Importing library…")
-                    } currentValueLabel: {
-                        Text("\(progress.done) of \(progress.total)")
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
-            Section("Library") {
-                FolderContents(
-                    folder: model.library.tree, expanded: $expanded, moving: $moving, deleting: $deleting)
-            }
-        }
-        .listStyle(.sidebar)
-        .overlay {
+        Group {
             if model.library.loaded && model.library.books.isEmpty && model.library.pendingFolders.isEmpty {
-                Text("No books yet")
-                    .foregroundStyle(.secondary)
+                ContentUnavailableView {
+                    Label("Your Library Is Empty", systemImage: "books.vertical")
+                } description: {
+                    Text("Import an EPUB or paste a text to start reading.")
+                } actions: {
+                    Button("Import Book…") { model.showImport = true }
+                        .buttonStyle(.borderedProminent)
+                }
+            } else {
+                List(selection: $selection) {
+                    if let progress = model.library.importProgress {
+                        Section {
+                            ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1))) {
+                                Text("Importing library…")
+                            } currentValueLabel: {
+                                Text("\(progress.done) of \(progress.total)")
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                    FolderContents(folder: model.library.tree, expanded: $expanded)
+                }
+                .listStyle(.inset)
+                .contextMenu(forSelectionType: UUID.self) { ids in
+                    let books = ids.compactMap(model.library.book)
+                    if !books.isEmpty {
+                        if books.count == 1 { Button("Open") { open(books[0].id) } }
+                        Divider()
+                        Button(books.count == 1 ? "Move to Folder…" : "Move \(books.count) Books to Folder…") {
+                            moving = books
+                        }
+                        Button(books.count == 1 ? "Delete…" : "Delete \(books.count) Books…", role: .destructive) {
+                            deleting = books
+                        }
+                    }
+                } primaryAction: { ids in
+                    if ids.count == 1, let id = ids.first { open(id) }
+                }
+                .onDeleteCommand {
+                    deleting = selection.compactMap(model.library.book)
+                }
+                .frame(maxWidth: 900)
+                .frame(maxWidth: .infinity)
             }
         }
+        .navigationTitle("Library")
         .toolbar {
-            ToolbarItemGroup {
+            AppToolbarItems()
+            ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     creatingFolder = true
                 } label: {
@@ -48,50 +76,50 @@ struct LibrarySidebar: View {
                 .help("Import a book")
             }
         }
-        .sheet(item: $moving) { book in
-            MoveBookSheet(book: book)
+        .sheet(isPresented: Binding(get: { !moving.isEmpty }, set: { if !$0 { moving = [] } })) {
+            MoveBookSheet(books: moving)
         }
         .sheet(isPresented: $creatingFolder) {
             NewFolderSheet()
         }
         .confirmationDialog(
-            "Delete “\(deleting?.title ?? "")”?", isPresented: .constant(deleting != nil), titleVisibility: .visible
+            deleting.count == 1 ? "Delete “\(deleting[0].title)”?" : "Delete \(deleting.count) books?",
+            isPresented: Binding(get: { !deleting.isEmpty }, set: { if !$0 { deleting = [] } }),
+            titleVisibility: .visible
         ) {
             Button("Delete", role: .destructive) {
-                if let book = deleting {
-                    Task { await model.library.delete([book.id]) }
-                }
-                deleting = nil
+                let ids = deleting.map(\.id)
+                Task { await model.library.delete(ids) }
+                selection.subtract(ids)
+                deleting = []
             }
-            Button("Cancel", role: .cancel) { deleting = nil }
+            Button("Cancel", role: .cancel) { deleting = [] }
         } message: {
             Text("The book and its translations are removed from every synced device.")
         }
+    }
+
+    private func open(_ id: UUID) {
+        model.selectedBookId = id
     }
 }
 
 private struct FolderContents: View {
     let folder: LibraryFolder
     @Binding var expanded: Set<[String]>
-    @Binding var moving: BookMeta?
-    @Binding var deleting: BookMeta?
 
     var body: some View {
         ForEach(folder.folders) { child in
             DisclosureGroup(isExpanded: binding(for: child.path)) {
-                FolderContents(folder: child, expanded: $expanded, moving: $moving, deleting: $deleting)
+                FolderContents(folder: child, expanded: $expanded)
             } label: {
                 Label(child.name, systemImage: "folder")
+                    .font(.headline)
             }
         }
         ForEach(folder.books) { book in
             BookRow(book: book)
                 .tag(book.id)
-                .contextMenu {
-                    Button("Move to Folder…") { moving = book }
-                    Divider()
-                    Button("Delete…", role: .destructive) { deleting = book }
-                }
         }
     }
 
@@ -108,24 +136,35 @@ private struct BookRow: View {
     let book: BookMeta
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 12) {
             Image(systemName: "book.closed")
+                .font(.title2)
                 .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 2) {
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(book.title)
+                    .font(.body.weight(.medium))
                     .lineLimit(2)
-                Text("\(book.chaptersCount) chapters · \(Int((book.translationRatio * 100).rounded()))% translated")
+                Text(counts)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Spacer()
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
         .help(book.title)
+    }
+
+    private var counts: String {
+        let chapters = book.chaptersCount == 1 ? "1 chapter" : "\(book.chaptersCount) chapters"
+        let paragraphs = book.paragraphsCount == 1 ? "1 paragraph" : "\(book.paragraphsCount) paragraphs"
+        let translated = "\(Int((book.translationRatio * 100).rounded()))% translated"
+        return "\(chapters) · \(paragraphs) · \(translated)"
     }
 }
 
 struct MoveBookSheet: View {
-    let book: BookMeta
+    let books: [BookMeta]
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var target: [String] = []
@@ -133,7 +172,7 @@ struct MoveBookSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Move “\(book.title)”")
+            Text(books.count == 1 ? "Move “\(books[0].title)”" : "Move \(books.count) books")
                 .font(.headline)
             Picker("Folder", selection: $target) {
                 ForEach(model.library.tree.allPaths, id: \.self) { path in
@@ -148,7 +187,7 @@ struct MoveBookSheet: View {
                 Button("Move") {
                     let name = newFolder.trimmingCharacters(in: .whitespacesAndNewlines)
                     let path = name.isEmpty ? target : target + [name]
-                    Task { await model.library.move([book.id], to: path) }
+                    Task { await model.library.move(books.map(\.id), to: path) }
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -156,7 +195,7 @@ struct MoveBookSheet: View {
         }
         .padding(20)
         .frame(width: 420)
-        .onAppear { target = book.path }
+        .onAppear { target = books.first?.path ?? [] }
     }
 }
 

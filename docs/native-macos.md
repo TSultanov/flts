@@ -6,19 +6,31 @@ are resolved in Rust). The Tauri app remains the shell on iOS and Android.
 
 ## Layout
 
-| Crate / dir      | Role                                                                                                                                                                                            |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `app-core`       | The app, independent of the shell: state, queues, sync, Anki, lyrics, view models, and `dispatch` — the `{cmd, args}` → JSON command table.                                                     |
-| `site/src-tauri` | Tauri adapter: `TauriHost` (events, main thread, Android dirs) and one invoke handler that forwards every command to `app_core::dispatch`.                                                      |
-| `flts-ffi`       | UniFFI facade for Swift: `FltsCore.start(shell:)`, `invoke(cmd:args:)` (JSON), `shutdown()`; events reach Swift through the `Shell` callback with the same names and payloads the webview gets. |
-| `native/`        | xcodegen project. `scripts/build-core.sh` builds `libflts_ffi.a` and regenerates `Generated/` (bindings).                                                                                       |
+| Crate / dir      | Role                                                                                                                                                                                                                                                       |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `app-core`       | The app, independent of the shell: state, queues, sync, Anki, lyrics, view models, and `dispatch` — the `{cmd, args}` → JSON command table.                                                                                                                |
+| `site/src-tauri` | Tauri adapter: `TauriHost` (events, main thread, Android dirs) and one invoke handler that forwards every command to `app_core::dispatch`.                                                                                                                 |
+| `flts-ffi`       | UniFFI facade for Swift: `FltsCore` with one typed async method per command the app uses, records for its data, a `CoreEvent` enum for events, and `EpubPreview` (a parsed EPUB kept in Rust until imported). Ids reach Swift as `UUID`, numbers as `Int`. |
+| `native/`        | xcodegen project. `scripts/build-core.sh` builds `libflts_ffi.a` and regenerates `Generated/` (bindings).                                                                                                                                                  |
 
-Commands are JSON over FFI on purpose: one table serves Tauri, Swift and the E2E
-bridge, and `bridge-conformance.spec.ts` checks it. (The plan had typed UniFFI
-records; JSON with Codable models on the Swift side kept one contract instead
-of two.) The reader's hot path has its own command, `get_paragraph_texts_batch`
-(text plus UTF-16 word ranges, mark runs and the book's language), so Swift
-never parses HTML.
+Tauri and the E2E bridge use the JSON command table (`dispatch`); Swift uses the
+typed `FltsCore`, which calls the same app-core functions. The records mirror
+the core's serde names, so most methods convert a core value into its record
+through serde inside Rust (no JSON crosses into Swift); the reader's paragraph
+texts convert field by field. Events arrive from the core as (name, payload)
+and are decoded once into `CoreEvent`; a test checks every core event has a
+case. The reader's text comes as plain text plus UTF-16 word ranges, mark runs
+and the book's language, so Swift never parses HTML.
+
+## Layout
+
+As in the web app: the window opens on a library page (folders and books;
+double-click or Return opens, the context menu and Delete act on the whole
+selection). An open book is a split view whose chapter sidebar is hidden by
+default (C, or ⌃⌘C), with the word bar along the bottom: word, dictionary form,
+transcription, translations, and Anki; W (or ⌃⌘W) expands its details upward
+over the page without reflowing it. Back to the library is the toolbar's back
+button (⌥⌘L). Sync status, Anki sync and Lyrics sit in the toolbar on every page.
 
 ## Build
 
@@ -70,12 +82,12 @@ Chapter open including the fetch from the core, 320 paragraphs, median of 5
 
 |                                      | Native | Web (WebKit) |
 | ------------------------------------ | ------ | ------------ |
-| From the chapter's start, text shown | 59 ms  | 58–70 ms     |
-| Restoring ¾ in, text shown           | 42 ms  | 84–99 ms     |
+| From the chapter's start, text shown | 45 ms  | 58–70 ms     |
+| Restoring ¾ in, text shown           | 29 ms  | 84–99 ms     |
 
 The books differ in paragraph lengths, and headless WebKit is not the app's own
 webview (that run needs a visible window), so this is indicative only. About
-30 ms of the native time is the JSON fetch of all 320 paragraphs.
+20–28 ms of the native time is fetching all 320 paragraphs from the core.
 
 ### Reading position
 
@@ -86,7 +98,8 @@ on) it lands on the right page of that paragraph.
 
 ## Verification
 
-- Swift unit tests (`make test-macos-native`): stores against a fake core, the
+- Swift unit tests (`make test-macos-native`): stores against a fake core
+  (`Tests/FakeCore.swift`, generated from `FltsCoreProtocol`), the
   layout (pagination, in-place edits), exact reopen and cross-device position
   fallback, and a hit-test gate (284 random taps on provisional and full
   layouts, 88 on hyphen-split words, no misses); clean under Thread Sanitizer.
@@ -102,8 +115,13 @@ on) it lands on the right page of that paragraph.
 - Reader selection: drag selects (Copy, ⌘C, Look Up); a click without a drag
   taps the word. Tested with synthesized mouse events.
 - UI tests (`make test-macos-native-ui FLTS_UITEST_CONFIG_DIR=<seeded dir>`):
-  open a book and flip, open Settings. They need an unlocked session; on a
-  locked screen XCTest refuses to start.
+  open a book and flip, Settings, and a tour that asserts the arrow keys still
+  page after tapping words, using the word panel and picking a chapter, moves
+  the book into a new folder, opens import, Lyrics and Settings, and (with
+  `FLTS_UITEST_EMPTY_DIR`) shows onboarding; its screenshots are attachments
+  in the result bundle. They need an unlocked session.
+- Reading position holds across a resize round trip and ten sidebar toggles
+  (a sticky anchor; full layouts wait for relayouts to settle).
 - Tauri on all three platforms still builds on the refactored core: macOS
   release, a signed iOS `.ipa`, a signed Android APK.
 - Runs on another config dir and tests keep UI state in the
@@ -124,9 +142,8 @@ took the export trie from 1.6 MB to 0.3 MB.
 - QR scanning (macOS shows the pairing code; scanning comes with iPad).
 - An iPad target: the reader canvas and `Platform` are AppKit. `Sources/Core`
   and `Sources/Stores` type-check against the iOS 18 SDK under Swift 6.
-- Lyrics against a live Spotify was not driven by automation (it would prompt
-  for Automation access); the store is unit-tested and the core path is covered
-  by the Tauri E2E tier.
+- Dark mode is checked by an offscreen render (the UI tests cannot switch the
+  system appearance).
 - Universal (x86_64) build; sandbox and App Store.
 
 ## Cutover notes

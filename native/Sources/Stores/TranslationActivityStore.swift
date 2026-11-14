@@ -1,6 +1,13 @@
 import Foundation
 import Observation
 
+/// A paragraph's translation in flight.
+struct TranslationActivity: Equatable, Sendable {
+    var requestId: Int
+    var progressChars: Int
+    var expectedChars: Int
+}
+
 /// Active paragraph translations. Progress and finished events are unordered,
 /// so only `started` (or a snapshot) creates an entry, and each event touches
 /// only its own request.
@@ -24,37 +31,35 @@ final class TranslationActivityStore: CoreBound {
 
     func attach(_ core: any CoreService) {
         self.core = core
-        events.on("paragraph_translation_started", as: TranslationStartedEvent.self) { [weak self] e in
-            self?.started(e)
-        }
-        events.on("paragraph_translation_progress", as: TranslationProgressEvent.self) { [weak self] e in
-            self?.progress(e)
-        }
-        events.on("paragraph_translation_finished", as: TranslationFinishedEvent.self) { [weak self] e in
-            self?.finished(e)
-        }
-        events.on("book_deleted", as: UUID.self) { [weak self] id in
+        events.on { [weak self] event in
             guard let self else { return }
-            reconcileToken += 1
-            entries = entries.filter { $0.key.bookId != id }
+            switch event {
+            case .translationStarted(let e): started(e)
+            case .translationProgress(let e): progress(e)
+            case .translationFinished(let e): finished(e)
+            case .bookDeleted(let id):
+                reconcileToken += 1
+                entries = entries.filter { $0.key.bookId != id }
+            default: break
+            }
         }
         Task { await reconcile() }
     }
 
-    func started(_ e: TranslationStartedEvent) {
+    func started(_ e: TranslationStarted) {
         reconcileToken += 1
         entries[Key(bookId: e.bookId, paragraphId: e.paragraphId)] = TranslationActivity(
             requestId: e.requestId, progressChars: 0, expectedChars: e.expectedChars)
     }
 
-    func progress(_ e: TranslationProgressEvent) {
+    func progress(_ e: TranslationProgress) {
         let key = Key(bookId: e.bookId, paragraphId: e.paragraphId)
         guard let existing = entries[key], existing.requestId == e.requestId else { return }
         entries[key] = TranslationActivity(
             requestId: e.requestId, progressChars: e.progressChars, expectedChars: e.expectedChars)
     }
 
-    func finished(_ e: TranslationFinishedEvent) {
+    func finished(_ e: TranslationFinished) {
         if let error = e.error { lastFailure = error }
         reconcileToken += 1
         let key = Key(bookId: e.bookId, paragraphId: e.paragraphId)
@@ -68,8 +73,7 @@ final class TranslationActivityStore: CoreBound {
         guard let core else { return }
         reconcileToken += 1
         let token = reconcileToken
-        guard let rows: [ActiveTranslationRow] = try? await core.invoke("list_paragraph_translation_activity")
-        else { return }
+        guard let rows = try? await core.listTranslationActivity() else { return }
         guard token == reconcileToken else { return }
         var fresh: [Key: TranslationActivity] = [:]
         for row in rows {

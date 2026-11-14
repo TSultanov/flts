@@ -39,38 +39,32 @@ final class LyricsStore: CoreBound {
 
     func attach(_ core: any CoreService) {
         self.core = core
-        events.on("spotify_state", as: NowPlaying.self) { [weak self] np in
-            self?.apply(np)
-        }
-        events.on("lyrics_resolved", as: LyricsResolvedEvent.self) { [weak self] e in
-            guard let self, e.trackId == nowPlaying?.trackId else { return }
-            lyrics = e.lyrics
-            lyricsResolved = true
-        }
-        events.on("lyrics_translation_progress", as: LyricsProgressEvent.self) { [weak self] e in
-            guard let self, e.trackId == nowPlaying?.trackId else { return }
-            phase = .translating(bytes: e.bytes)
-        }
-        events.on("lyrics_translation_done", as: LyricsDoneEvent.self) { [weak self] e in
-            guard let self, e.trackId == nowPlaying?.trackId else { return }
-            translation = e.translation
-            phase = .done
-        }
-        events.on("lyrics_translation_error", as: LyricsErrorEvent.self) { [weak self] e in
-            guard let self, e.trackId == nowPlaying?.trackId else { return }
-            phase = .failed(e.error)
-        }
-        events.on("spotify_queue", as: QueueSnapshot.self) { [weak self] q in
-            self?.queue = q
+        events.on { [weak self] event in
+            guard let self else { return }
+            switch event {
+            case .spotifyState(let np): apply(np)
+            case .spotifyQueue(let q): queue = q
+            case .lyricsResolved(let e) where e.trackId == nowPlaying?.trackId:
+                lyrics = e.lyrics
+                lyricsResolved = true
+            case .lyricsTranslationProgress(let e) where e.trackId == nowPlaying?.trackId:
+                phase = .translating(bytes: e.bytes)
+            case .lyricsTranslationDone(let e) where e.trackId == nowPlaying?.trackId:
+                translation = e.translation
+                phase = .done
+            case .lyricsTranslationError(let e) where e.trackId == nowPlaying?.trackId:
+                phase = .failed(e.error)
+            default: break
+            }
         }
     }
 
     func start() async {
         guard let core, !watching else { return }
         do {
-            try await core.call("start_spotify_watcher")
+            try await core.startSpotifyWatcher()
             watching = true
-            if let np: NowPlaying = try? await core.invoke("get_now_playing", as: NowPlaying?.self) ?? nil {
+            if let np = (try? await core.getNowPlaying()) ?? nil {
                 apply(np)
             }
             await refreshSpotifyStatus()
@@ -82,7 +76,7 @@ final class LyricsStore: CoreBound {
     func stop() async {
         guard let core, watching else { return }
         watching = false
-        try? await core.call("stop_spotify_watcher")
+        try? await core.stopSpotifyWatcher()
     }
 
     private func apply(_ np: NowPlaying) {
@@ -101,9 +95,7 @@ final class LyricsStore: CoreBound {
     func loadTrack() async {
         guard let core, let trackId = nowPlaying?.trackId, !targetLanguage.isEmpty else { return }
         do {
-            let state: TrackLyricsState = try await core.invoke(
-                "get_track_lyrics_state",
-                ["trackId": .string(trackId), "targetLang": .string(targetLanguage), "model": .string(model)])
+            let state = try await core.getTrackLyricsState(trackId: trackId, targetLang: targetLanguage, model: model)
             guard trackId == nowPlaying?.trackId else { return }
             if let lyrics = state.lyrics {
                 self.lyrics = lyrics
@@ -133,7 +125,7 @@ final class LyricsStore: CoreBound {
         guard let lyrics, lyrics.synced, let positionMs else { return nil }
         var current: Int?
         for (i, line) in lyrics.lines.enumerated() {
-            guard let t = line.time_ms else { continue }
+            guard let t = line.timeMs else { continue }
             if t <= positionMs { current = i } else { break }
         }
         return current
@@ -143,36 +135,36 @@ final class LyricsStore: CoreBound {
 
     func refreshSpotifyStatus() async {
         guard let core else { return }
-        webStatus = try? await core.invoke("spotify_web_status")
-        cdpStatus = try? await core.invoke("spotify_cdp_status")
-        loginAgent = try? await core.invoke("spotify_login_agent_status")
-        queue = (try? await core.invoke("spotify_web_get_queue", as: QueueSnapshot?.self)) ?? queue
+        webStatus = try? await core.spotifyWebStatus()
+        cdpStatus = try? await core.spotifyCdpStatus()
+        loginAgent = try? await core.spotifyLoginAgentStatus()
+        queue = ((try? await core.spotifyWebQueue()) ?? nil) ?? queue
     }
 
     func connectWeb(clientId: String) async {
-        await run("spotify_web_connect", ["clientId": .string(clientId)])
+        await run { try await $0.spotifyWebConnect(clientId: clientId) }
     }
 
     func disconnectWeb() async {
-        await run("spotify_web_disconnect")
+        await run { try await $0.spotifyWebDisconnect() }
     }
 
     func restartSpotifyWithDevTools() async {
-        await run("spotify_restart_with_devtools")
+        await run { _ = try await $0.spotifyRestartWithDevtools() }
     }
 
     func installLoginAgent() async {
-        await run("spotify_install_login_agent")
+        await run { _ = try await $0.spotifyInstallLoginAgent() }
     }
 
     func removeLoginAgent() async {
-        await run("spotify_remove_login_agent")
+        await run { _ = try await $0.spotifyRemoveLoginAgent() }
     }
 
-    private func run(_ cmd: String, _ args: [String: JSONValue] = [:]) async {
+    private func run(_ action: (any CoreService) async throws -> Void) async {
         guard let core else { return }
         do {
-            try await core.call(cmd, args)
+            try await action(core)
             error = nil
         } catch {
             self.error = error.localizedDescription

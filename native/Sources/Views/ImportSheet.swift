@@ -42,13 +42,14 @@ private struct EpubImport: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let preview {
-                Text(preview.summary.title).font(.title2.weight(.semibold))
-                Text("\(preview.summary.chapters.count) chapters").foregroundStyle(.secondary)
-                List(Array(preview.summary.chapters.enumerated()), id: \.offset) { _, chapter in
+                let chapters = preview.chapters()
+                Text(preview.title()).font(.title2.weight(.semibold))
+                Text("\(chapters.count) chapters").foregroundStyle(.secondary)
+                List(Array(chapters.enumerated()), id: \.offset) { _, chapter in
                     HStack {
                         Text(chapter.title.isEmpty ? "Untitled" : chapter.title).lineLimit(1)
                         Spacer()
-                        Text("\(chapter.paragraphs.count) ¶").foregroundStyle(.secondary).monospacedDigit()
+                        Text("\(chapter.paragraphCount) ¶").foregroundStyle(.secondary).monospacedDigit()
                     }
                 }
                 .listStyle(.bordered)
@@ -97,7 +98,7 @@ private struct EpubImport: View {
         defer { busy = false }
         do {
             let parsed = try await model.library.parseEpub(at: url)
-            language = await model.config.suggestedSourceLanguage(for: parsed.summary.language)
+            language = model.config.suggestedSourceLanguage(for: parsed.language())
             preview = parsed
         } catch {
             self.error = error.localizedDescription

@@ -23,19 +23,20 @@ final class BookStore {
         self.core = core
         self.events = events
         tokens.append(
-            events.on("book_updated", as: UUID.self) { [weak self] id in
-                guard let self, id == bookId, !self.chaptersReloadScheduled else { return }
-                self.chaptersReloadScheduled = true
-                Task {
-                    try? await Task.sleep(for: .milliseconds(300))
-                    self.chaptersReloadScheduled = false
-                    await self.loadChapters()
+            events.on { [weak self] event in
+                guard let self else { return }
+                switch event {
+                case .bookUpdated(let id) where id == bookId && !chaptersReloadScheduled:
+                    chaptersReloadScheduled = true
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(300))
+                        self.chaptersReloadScheduled = false
+                        await self.loadChapters()
+                    }
+                case .summaryGenerationProgress(let e) where e.bookId == bookId:
+                    Task { await self.loadSummary() }
+                default: break
                 }
-            })
-        tokens.append(
-            events.on("summary_generation_progress", as: SummaryProgressEvent.self) { [weak self] e in
-                guard let self, e.bookId == bookId else { return }
-                Task { await self.loadSummary() }
             })
     }
 
@@ -46,8 +47,7 @@ final class BookStore {
 
     func load() async {
         await loadChapters()
-        readingState = (try? await core.invoke(
-            "get_book_reading_state", ["bookId": .uuid(bookId)], as: BookReadingState?.self)) ?? nil
+        readingState = (try? await core.getBookReadingState(bookId: bookId)) ?? nil
         if currentChapter == nil {
             currentChapter = readingState?.chapterId ?? chapters.first?.id
         }
@@ -57,14 +57,14 @@ final class BookStore {
 
     func loadChapters() async {
         do {
-            chapters = try await core.invoke("list_book_chapters", ["bookId": .uuid(bookId)])
+            chapters = try await core.listBookChapters(bookId: bookId)
         } catch {
             self.error = error.localizedDescription
         }
     }
 
     func loadSummary() async {
-        summary = try? await core.invoke("get_book_summary_status", ["bookId": .uuid(bookId)])
+        summary = try? await core.getBookSummaryStatus(bookId: bookId)
     }
 
     func save(chapterId: Int, paragraphId: Int, pageOffset: Int) {
@@ -72,20 +72,13 @@ final class BookStore {
         guard state != readingState else { return }
         readingState = state
         Task { [core, bookId] in
-            try? await core.call(
-                "save_book_reading_state",
-                [
-                    "bookId": .uuid(bookId), "chapterId": .int(chapterId), "paragraphId": .int(paragraphId),
-                    "pageOffset": .int(pageOffset),
-                ])
+            try? await core.saveBookReadingState(bookId: bookId, state: state)
         }
     }
 
     func translateChapter(_ chapterId: Int, model: String) async {
         do {
-            try await core.call(
-                "translate_chapter",
-                ["bookId": .uuid(bookId), "chapterId": .int(chapterId), "model": .string(model), "useCache": true])
+            try await core.translateChapter(bookId: bookId, chapterId: chapterId, model: model, useCache: true)
         } catch {
             self.error = error.localizedDescription
         }

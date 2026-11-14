@@ -64,33 +64,18 @@ final class BookSession {
     }
 }
 
+/// The window's content: the library page, or the open book.
 struct MainView: View {
     @Environment(AppModel.self) private var model
-    @State private var session: BookSession?
-    @State private var showInspector = true
-    @State private var columns = NavigationSplitViewVisibility.all
 
     var body: some View {
         @Bindable var model = model
-        NavigationSplitView(columnVisibility: $columns) {
-            LibrarySidebar()
-                .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 360)
-        } content: {
-            Group {
-                if let session {
-                    ChaptersList(session: session)
-                } else {
-                    ContentUnavailableView("No Book Selected", systemImage: "books.vertical")
-                }
-            }
-            .navigationSplitViewColumnWidth(min: 180, ideal: 230, max: 340)
-        } detail: {
-            Group {
-                if let session {
-                    BookReaderScreen(session: session, showInspector: $showInspector)
-                } else {
-                    LibraryOverview()
-                }
+        Group {
+            if let id = model.selectedBookId {
+                BookPage(bookId: id)
+                    .id(id)
+            } else {
+                LibraryPage()
             }
         }
         .sheet(isPresented: $model.showImport) {
@@ -102,14 +87,6 @@ struct MainView: View {
                 model.selectedBookId = nil
             }
         }
-        .task(id: model.selectedBookId) {
-            session?.close()
-            session = nil
-            guard let id = model.selectedBookId, let core = model.core else { return }
-            let next = BookSession(bookId: id, core: core, events: model.events)
-            session = next
-            await next.start()
-        }
         .alert(
             "Something went wrong", isPresented: .constant(model.lastError != nil),
             actions: { Button("OK") { model.lastError = nil } },
@@ -117,21 +94,53 @@ struct MainView: View {
     }
 }
 
-struct LibraryOverview: View {
+/// An open book: the reader, with the chapter list as a sidebar hidden by
+/// default and the word panel along the bottom.
+struct BookPage: View {
+    let bookId: UUID
     @Environment(AppModel.self) private var model
+    @State private var session: BookSession?
+    @State private var columns = NavigationSplitViewVisibility.detailOnly
+    @State private var wordExpanded = false
 
     var body: some View {
-        if model.library.loaded && model.library.books.isEmpty {
-            ContentUnavailableView {
-                Label("Your Library Is Empty", systemImage: "books.vertical")
-            } description: {
-                Text("Import an EPUB or paste a text to start reading.")
-            } actions: {
-                Button("Import Book…") { model.showImport = true }
-                    .buttonStyle(.borderedProminent)
+        NavigationSplitView(columnVisibility: $columns) {
+            Group {
+                if let session {
+                    ChaptersList(session: session)
+                } else {
+                    ProgressView()
+                }
             }
-        } else {
-            ContentUnavailableView("Select a Book", systemImage: "book")
+            .navigationSplitViewColumnWidth(min: 180, ideal: 240, max: 360)
+        } detail: {
+            Group {
+                if let session {
+                    BookReaderScreen(
+                        session: session, wordExpanded: $wordExpanded,
+                        toggleChapters: { columns = columns == .detailOnly ? .all : .detailOnly })
+                } else {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    Button {
+                        model.selectedBookId = nil
+                    } label: {
+                        Label("Library", systemImage: "chevron.backward")
+                    }
+                    .help("Back to the library (⌥⌘L)")
+                }
+                AppToolbarItems()
+            }
         }
+        .task {
+            guard let core = model.core else { return }
+            let next = BookSession(bookId: bookId, core: core, events: model.events)
+            session = next
+            await next.start()
+        }
+        .onDisappear { session?.close() }
     }
 }

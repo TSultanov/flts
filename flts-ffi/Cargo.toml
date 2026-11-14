@@ -20,7 +20,10 @@ app-core = { path = "../app-core" }
 library = { path = "../library" }
 uniffi = "0.32"
 log = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
+uuid = { workspace = true }
 thiserror = "2"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]

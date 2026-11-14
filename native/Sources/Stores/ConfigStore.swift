@@ -22,16 +22,13 @@ final class ConfigStore: CoreBound {
 
     func attach(_ core: any CoreService) {
         self.core = core
-        events.on("config_updated") { [weak self] _ in
-            Task { await self?.reload() }
+        events.on { [weak self] event in
+            if case .configUpdated = event { Task { await self?.reload() } }
         }
+        languages = (try? core.getLanguages()) ?? []
+        providers = (try? core.getTranslationProviders()) ?? []
         Task {
-            async let languages: [LanguageInfo] = core.invoke("get_languages")
-            async let providers: [ProviderMeta] = core.invoke("get_translation_providers")
-            async let root: String = core.invoke("get_library_root")
-            self.languages = (try? await languages) ?? []
-            self.providers = (try? await providers) ?? []
-            self.libraryRoot = try? await root
+            libraryRoot = try? await core.getLibraryRoot()
             await reload()
         }
     }
@@ -39,7 +36,7 @@ final class ConfigStore: CoreBound {
     func reload() async {
         guard let core else { return }
         do {
-            config = try await core.invoke("get_config")
+            config = try await core.getConfig()
             loaded = true
             await loadModels()
         } catch {
@@ -52,7 +49,7 @@ final class ConfigStore: CoreBound {
         guard let core else { return }
         modelsLoading = true
         defer { modelsLoading = false }
-        models = (try? await core.invoke("get_models")) ?? []
+        models = (try? await core.getModels()) ?? []
     }
 
     /// Onboarding is done once a target language and the provider's key are set.
@@ -81,7 +78,7 @@ final class ConfigStore: CoreBound {
         let previous = config
         config = next
         do {
-            try await core.call("update_config", ["config": try JSONValue.from(next)])
+            try await core.updateConfig(config: next)
         } catch {
             config = previous
             self.error = error.localizedDescription
@@ -90,16 +87,12 @@ final class ConfigStore: CoreBound {
 
     func purgeGeminiCaches() async throws -> Int {
         guard let core else { return 0 }
-        return try await core.invoke("purge_gemini_caches")
+        return try await core.purgeGeminiCaches()
     }
 
     /// An EPUB's declared language as a known ISO 639-3 id, else English.
-    func suggestedSourceLanguage(for code: String?) async -> String {
-        guard let core else { return "eng" }
-        var args: [String: JSONValue] = [:]
-        if let code { args["code"] = .string(code) }
-        let parsed = (try? await core.invoke("parse_language_id", args, as: String?.self)) ?? nil
-        guard let parsed else { return "eng" }
+    func suggestedSourceLanguage(for code: String?) -> String {
+        guard let parsed = core?.parseLanguageId(code: code) else { return "eng" }
         return languages.isEmpty || languages.contains { $0.id == parsed } ? parsed : "eng"
     }
 }

@@ -5,19 +5,6 @@ import Testing
 
 @testable import FLTS
 
-/// Records calls and replies with canned JSON.
-final class FakeCore: CoreService, @unchecked Sendable {
-    var replies: [String: String] = [:]
-    private(set) var calls: [(String, [String: JSONValue])] = []
-    private let lock = NSLock()
-
-    func invokeRaw(_ cmd: String, _ args: [String: JSONValue]) async throws -> Data {
-        lock.withLock { calls.append((cmd, args)) }
-        guard let reply = lock.withLock({ replies[cmd] }) else { throw CoreFailure(message: "no reply for \(cmd)") }
-        return Data(reply.utf8)
-    }
-}
-
 private func book(_ title: String, _ path: [String]) -> BookMeta {
     BookMeta(id: UUID(), title: title, chaptersCount: 1, paragraphsCount: 1, translationRatio: 0, path: path)
 }
@@ -74,15 +61,20 @@ private func book(_ title: String, _ path: [String]) -> BookMeta {
     @Test func loadsParagraphTexts() async {
         let core = FakeCore()
         let bookId = UUID()
-        core.replies["get_book_chapter_paragraph_ids"] = "[0,1]"
-        core.replies["get_paragraph_texts_batch"] = """
-            {"language":"spa","paragraphs":[{"id":0,"text":"Hola","runs":[],"words":[{"start":0,"len":4,"s":0,"w":0,"f":0,"t":"Hello"}],"translated":true},
-             {"id":1,"text":"mundo","runs":[{"start":0,"len":5,"marks":1}],"words":[],"translated":false}]}
-            """
+        core.getBookChapterParagraphIdsHandler = { _, _ in [0, 1] }
+        core.getParagraphTextsHandler = { _, _ in
+            ParagraphTexts(language: "spa", paragraphs: [
+                ParagraphText(
+                    id: 0, text: "Hola", runs: [],
+                    words: [WordRange(start: 0, len: 4, sentence: 0, word: 0, flatIndex: 0, translation: "Hello")],
+                    translated: true),
+                ParagraphText(id: 1, text: "mundo", runs: [MarkRun(start: 0, len: 5, marks: 1)], words: [], translated: false),
+            ])
+        }
         let store = ChapterStore(bookId: bookId, chapterId: 0, core: core, events: EventHub())
         await store.load()
         #expect(store.paragraphIds == [0, 1])
-        #expect(store.paragraphs[0]?.words.first?.t == "Hello")
+        #expect(store.paragraphs[0]?.words.first?.translation == "Hello")
         #expect(store.untranslatedCount == 1)
         #expect(store.language == "es")
     }
@@ -93,29 +85,28 @@ private func book(_ title: String, _ path: [String]) -> BookMeta {
         let core = FakeCore()
         let bookId = UUID()
         let events = EventHub()
-        core.replies["get_book_chapter_paragraph_ids"] = "[0,1]"
-        core.replies["get_paragraph_texts_batch"] = #"{"language":"spa","paragraphs":[]}"#
+        core.getBookChapterParagraphIdsHandler = { _, _ in [0, 1] }
+        core.getParagraphTextsHandler = { _, _ in ParagraphTexts(language: "spa", paragraphs: []) }
         let store = ChapterStore(bookId: bookId, chapterId: 0, core: core, events: events)
         await store.load()
-        let before = core.calls.filter { $0.0 == "get_paragraph_texts_batch" }.count
-        let payload = Data("\"\(bookId.uuidString.lowercased())\"".utf8)
-        for _ in 0..<20 { events.deliver("book_updated", payload) }
+        let before = core.count("getParagraphTexts")
+        for _ in 0..<20 { events.deliver(.bookUpdated(bookId: bookId)) }
         try await Task.sleep(for: .milliseconds(200))
-        #expect(core.calls.filter { $0.0 == "get_paragraph_texts_batch" }.count == before)
-        events.deliver("paragraph_updated", Data(#"{"bookId":"\#(bookId.uuidString.lowercased())","paragraphId":1}"#.utf8))
+        #expect(core.count("getParagraphTexts") == before)
+        events.deliver(.paragraphUpdated(event: ParagraphUpdated(bookId: bookId, paragraphId: 1)))
         try await Task.sleep(for: .milliseconds(200))
-        #expect(core.calls.filter { $0.0 == "get_paragraph_texts_batch" }.count == before + 1)
+        #expect(core.count("getParagraphTexts") == before + 1)
     }
 }
 
 @MainActor
 @Suite struct ChapterLayoutTests {
     private func paragraph(_ id: Int, _ text: String) -> ParagraphText {
-        var words: [ParagraphText.Word] = []
+        var words: [WordRange] = []
         var offset = 0
         for (i, w) in text.split(separator: " ").enumerated() {
             let len = (String(w) as NSString).length
-            words.append(.init(start: offset, len: len, s: 0, w: i, f: i, t: "t\(i)"))
+            words.append(WordRange(start: offset, len: len, sentence: 0, word: i, flatIndex: i, translation: "t\(i)"))
             offset += len + 1
         }
         return ParagraphText(id: id, text: text, runs: [], words: words, translated: true)
@@ -170,16 +161,16 @@ private func book(_ title: String, _ path: [String]) -> BookMeta {
         var paragraphs: [Int: ParagraphText] = [:]
         for id in 0..<12 {
             let text = (0..<(20 + id * 7)).map { String(words[($0 + id) % words.count]) }.joined(separator: " ") + "."
-            var ws: [ParagraphText.Word] = []
+            var ws: [WordRange] = []
             var offset = 0
             for (i, w) in text.dropLast().split(separator: " ").enumerated() {
                 let len = (String(w) as NSString).length
-                ws.append(.init(start: offset, len: len, s: 0, w: i, f: i, t: "tr-\(w.lowercased())"))
+                ws.append(WordRange(start: offset, len: len, sentence: 0, word: i, flatIndex: i, translation: "tr-\(w.lowercased())"))
                 offset += len + 1
             }
             let translated = id % 3 != 2
             paragraphs[id] = ParagraphText(
-                id: id, text: text, runs: id == 1 ? [.init(start: 0, len: 9, marks: 1)] : [],
+                id: id, text: text, runs: id == 1 ? [MarkRun(start: 0, len: 9, marks: 1)] : [],
                 words: translated ? ws : [], translated: translated)
         }
         let canvas = ReaderCanvas(frame: NSRect(x: 0, y: 0, width: 1200, height: 760))
@@ -208,11 +199,11 @@ private func book(_ title: String, _ path: [String]) -> BookMeta {
             let count = id % 23 == 0 ? 400 : 20 + (id * 13) % 30
             total += count
             var text = ""
-            var ws: [ParagraphText.Word] = []
+            var ws: [WordRange] = []
             for i in 0..<count {
                 if i > 0 { text += " " }
                 let w = String(vocab[(id + i * 5) % vocab.count])
-                ws.append(.init(start: (text as NSString).length, len: (w as NSString).length, s: i / 12, w: i % 12, f: i, t: "t\(i)"))
+                ws.append(WordRange(start: (text as NSString).length, len: (w as NSString).length, sentence: i / 12, word: i % 12, flatIndex: i, translation: "t\(i)"))
                 text += w
             }
             out[id] = ParagraphText(id: id, text: text + ".", runs: [], words: ws, translated: true)
@@ -407,9 +398,7 @@ private func book(_ title: String, _ path: [String]) -> BookMeta {
 
         // System dictionary: the core hops to the main thread through the shell.
         let core = try #require(model.core)
-        let definition = try await core.invoke(
-            "get_system_definition", ["word": "gato", "sourceLang": "spa", "targetLang": "eng"],
-            as: SystemDefinition?.self)
+        let definition = try await core.getSystemDefinition(word: "gato", sourceLang: "spa", targetLang: "eng")
         print("SMOKE-DICT \(definition.map { String($0.definition.prefix(60)) } ?? "none")")
 
         // Anki card for the selected word.
@@ -417,7 +406,7 @@ private func book(_ title: String, _ path: [String]) -> BookMeta {
         await session.start()
         let first = try #require(session.chapter?.paragraphs.values.first { $0.translated && !$0.words.isEmpty })
         let w = first.words[0]
-        session.word.select(WordRef(bookId: book.id, paragraphId: first.id, sentence: w.s, word: w.w, flatIndex: w.f), surface: nil)
+        session.word.select(WordRef(bookId: book.id, paragraphId: first.id, sentence: w.sentence, word: w.word, flatIndex: w.flatIndex), surface: nil)
         for _ in 0..<100 where session.word.info == nil { try await Task.sleep(for: .milliseconds(30)) }
         #expect(session.word.info != nil)
         if session.word.info?.canCreateCard == true {
@@ -439,6 +428,21 @@ private func book(_ title: String, _ path: [String]) -> BookMeta {
             host.cacheDisplay(in: host.bounds, to: rep)
             try rep.representation(using: .png, properties: [:])?.write(
                 to: URL(fileURLWithPath: out).appendingPathComponent("app.png"))
+            // The window's minimum size.
+            window.setContentSize(NSSize(width: 720, height: 480))
+            try await Task.sleep(for: .seconds(1.5))
+            let small = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: small)
+            try small.representation(using: .png, properties: [:])?.write(
+                to: URL(fileURLWithPath: out).appendingPathComponent("app-min.png"))
+            // Dark appearance.
+            window.setContentSize(NSSize(width: 1400, height: 860))
+            window.appearance = NSAppearance(named: .darkAqua)
+            try await Task.sleep(for: .seconds(1.5))
+            let dark = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: dark)
+            try dark.representation(using: .png, properties: [:])?.write(
+                to: URL(fileURLWithPath: out).appendingPathComponent("app-dark.png"))
         }
         await model.shutdown()
     }
@@ -569,13 +573,22 @@ extension NSView {
     @Test func followsTrackAndTranslation() async throws {
         let core = FakeCore()
         let events = EventHub()
-        core.replies["start_spotify_watcher"] = "null"
-        core.replies["get_now_playing"] = #"{"state":"playing","trackId":"t1","name":"Song","artist":"A","album":null,"positionMs":15000,"durationMs":200000}"#
-        core.replies["get_track_lyrics_state"] = #"{"lyrics":{"track_id":"t1","lines":[{"time_ms":0,"text":"uno"},{"time_ms":10000,"text":"dos"},{"time_ms":20000,"text":"tres"}],"synced":true},"translation":null}"#
-        core.replies["spotify_web_status"] = #"{"connected":false,"premiumRequired":false,"lastError":null}"#
-        core.replies["spotify_cdp_status"] = #"{"available":false,"port":9222,"hint":"off"}"#
-        core.replies["spotify_login_agent_status"] = #"{"installed":false,"path":"/x"}"#
-        core.replies["spotify_web_get_queue"] = "null"
+        core.startSpotifyWatcherHandler = {}
+        core.getNowPlayingHandler = {
+            NowPlaying(state: .playing, trackId: "t1", name: "Song", artist: "A", album: nil, positionMs: 15000, durationMs: 200000)
+        }
+        core.getTrackLyricsStateHandler = { _, _, _ in
+            TrackLyricsState(
+                lyrics: Lyrics(trackId: "t1", lines: [
+                    LyricsLine(timeMs: 0, text: "uno"), LyricsLine(timeMs: 10000, text: "dos"),
+                    LyricsLine(timeMs: 20000, text: "tres"),
+                ], synced: true),
+                translation: nil)
+        }
+        core.spotifyWebStatusHandler = { SpotifyWebStatus(connected: false, premiumRequired: false, lastError: nil) }
+        core.spotifyCdpStatusHandler = { SpotifyCdpStatus(available: false, port: 9222, hint: "off") }
+        core.spotifyLoginAgentStatusHandler = { SpotifyLoginAgentStatus(installed: false, path: "/x") }
+        core.spotifyWebQueueHandler = { nil }
         let store = LyricsStore(events: events)
         store.attach(core)
         store.targetLanguage = "eng"
@@ -585,29 +598,15 @@ extension NSView {
         #expect(store.currentLine(at: store.position(at: store.receivedAt)) == 1)
         #expect(store.phase == .translating(bytes: 0))
 
-        events.deliver("lyrics_translation_done", Data(#"{"trackId":"t1","translation":{"track_id":"t1","target_lang":"eng","model":"m","lines":[{"translation":"one","glosses":[]},{"translation":"two","glosses":[]},{"translation":"three","glosses":[]}]}}"#.utf8))
+        let lines = ["one", "two", "three"].map { LyricsLineTranslation(translation: $0, glosses: []) }
+        events.deliver(.lyricsTranslationDone(event: LyricsTranslationDone(
+            trackId: "t1", translation: LyricsTranslation(trackId: "t1", targetLang: "eng", model: "m", lines: lines))))
         #expect(store.translation?.lines[1].translation == "two")
         #expect(store.phase == .done)
 
         // A stale track's events are ignored.
-        events.deliver("lyrics_translation_error", Data(#"{"trackId":"old","error":"x"}"#.utf8))
+        events.deliver(.lyricsTranslationError(event: LyricsTranslationError(trackId: "old", error: "x")))
         #expect(store.phase == .done)
-    }
-}
-
-/// Counts calls on the way to the real core.
-final class CountingCore: CoreService, @unchecked Sendable {
-    let inner: any CoreService
-    private let lock = NSLock()
-    private var counts: [String: Int] = [:]
-
-    init(_ inner: any CoreService) { self.inner = inner }
-
-    func count(_ cmd: String) -> Int { lock.withLock { counts[cmd, default: 0] } }
-
-    func invokeRaw(_ cmd: String, _ args: [String: JSONValue]) async throws -> Data {
-        lock.withLock { counts[cmd, default: 0] += 1 }
-        return try await inner.invokeRaw(cmd, args)
     }
 }
 
@@ -630,16 +629,16 @@ final class CountingCore: CoreService, @unchecked Sendable {
         for _ in 0..<200 where !(model.config.loaded && model.library.loaded) {
             try await Task.sleep(for: .milliseconds(50))
         }
-        let core = CountingCore(try #require(model.core))
+        let core = FakeCore(inner: try #require(model.core))
 
         if let epub = env["FLTS_SMOKE_EPUB"] {
             let preview = try await model.library.parseEpub(at: URL(fileURLWithPath: epub))
-            print("SMOKE-EPUB title \(preview.summary.title) lang \(preview.summary.language ?? "-")")
-            #expect(!preview.summary.title.isEmpty)
-            let lang = await model.config.suggestedSourceLanguage(for: preview.summary.language)
+            print("SMOKE-EPUB title \(preview.title()) lang \(preview.language() ?? "-")")
+            #expect(!preview.title().isEmpty)
+            let lang = model.config.suggestedSourceLanguage(for: preview.language())
             #expect(lang == "spa")
             let id = try await model.library.importEpub(preview, sourceLanguageId: lang)
-            let chapters: [ChapterMeta] = try await core.invoke("list_book_chapters", ["bookId": .uuid(id)])
+            let chapters = try await core.listBookChapters(bookId: id)
             print("SMOKE-EPUB chapters \(chapters.map(\.title))")
             #expect(chapters.contains { $0.title == "Dos" })
         }
@@ -652,7 +651,7 @@ final class CountingCore: CoreService, @unchecked Sendable {
         await chapter.load()
         let total = chapter.paragraphIds.count
         #expect(chapter.untranslatedCount == total)
-        let fetchesBefore = core.count("get_paragraph_texts_batch")
+        let fetchesBefore = core.count("getParagraphTexts")
 
         await book.translateChapter(0, model: model.config.config?.model ?? "")
         for _ in 0..<600 where chapter.untranslatedCount > 0 {
@@ -660,8 +659,8 @@ final class CountingCore: CoreService, @unchecked Sendable {
         }
         #expect(chapter.untranslatedCount == 0, "only events can have updated the store")
         try await Task.sleep(for: .milliseconds(500))
-        let fetches = core.count("get_paragraph_texts_batch") - fetchesBefore
-        print("SMOKE-TRANSLATE paragraphs \(total), text fetches \(fetches), list_books \(core.count("list_books"))")
+        let fetches = core.count("getParagraphTexts") - fetchesBefore
+        print("SMOKE-TRANSLATE paragraphs \(total), text fetches \(fetches)")
         #expect(fetches <= total + 3)
         #expect(chapter.paragraphs.values.allSatisfy { !$0.words.isEmpty })
         #expect(model.activity.entries.isEmpty)
@@ -679,11 +678,11 @@ final class CountingCore: CoreService, @unchecked Sendable {
         var out: [Int: ParagraphText] = [:]
         for id in 0..<80 {
             var text = ""
-            var ws: [ParagraphText.Word] = []
+            var ws: [WordRange] = []
             for i in 0..<(25 + id % 40) {
                 if i > 0 { text += " " }
                 let w = String(vocab[(id * 3 + i) % vocab.count])
-                ws.append(.init(start: (text as NSString).length, len: (w as NSString).length, s: 0, w: i, f: i, t: "t"))
+                ws.append(WordRange(start: (text as NSString).length, len: (w as NSString).length, sentence: 0, word: i, flatIndex: i, translation: "t"))
                 text += w
             }
             out[id] = ParagraphText(id: id, text: text + ".", runs: [], words: ws, translated: true)
@@ -754,10 +753,10 @@ final class CountingCore: CoreService, @unchecked Sendable {
 
     @Test func dragSelectsAndClickReveals() throws {
         let text = "alpha beta gamma delta epsilon zeta eta theta"
-        var words: [ParagraphText.Word] = []
+        var words: [WordRange] = []
         var offset = 0
         for (i, w) in text.split(separator: " ").enumerated() {
-            words.append(.init(start: offset, len: w.count, s: 0, w: i, f: i, t: "t\(i)"))
+            words.append(WordRange(start: offset, len: w.count, sentence: 0, word: i, flatIndex: i, translation: "t\(i)"))
             offset += w.count + 1
         }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
@@ -824,5 +823,49 @@ final class CountingCore: CoreService, @unchecked Sendable {
         }
         print("OPEN-TIMING\n" + lines.joined(separator: "\n"))
         await model.shutdown()
+    }
+}
+
+@MainActor
+@Suite struct ReaderCreepTests {
+    /// Resizes and sidebar toggles relayout many times; the top line must not walk.
+    @Test func positionSurvivesResizesAndSidebarToggles() async throws {
+        let vocab = "uno dos tres cuatro cinco seis siete ocho nueve diez".split(separator: " ")
+        var paragraphs: [Int: ParagraphText] = [:]
+        for id in 0..<120 {
+            let n = 15 + (id * 17) % 140
+            let text = (0..<n).map { String(vocab[($0 + id) % vocab.count]) }.joined(separator: " ")
+            paragraphs[id] = ParagraphText(id: id, text: text, runs: [], words: [], translated: true)
+        }
+        let canvas = ReaderCanvas(frame: NSRect(x: 0, y: 0, width: 1280, height: 800))
+        canvas.setContent(order: Array(0..<120), paragraphs: paragraphs, typography: ReaderTypography(), anchor: nil)
+        canvas.layout()
+        func settle() async throws {
+            for _ in 0..<200 where canvas.isProvisional { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        try await settle()
+        canvas.go(toPage: 23, animated: false)
+        let top = canvas.text.lineAnchor(forPage: canvas.spreadStart)
+        let startedBefore = canvas.fullLayoutsStarted
+
+        for w in Array(stride(from: 1280, through: 900, by: -20)) + Array(stride(from: 900, through: 1280, by: 20)) {
+            canvas.setFrameSize(NSSize(width: CGFloat(w), height: 800))
+            canvas.layout()
+        }
+        try await settle()
+        #expect(canvas.text.lineAnchor(forPage: canvas.spreadStart) == top, "after a resize round trip")
+
+        // A 240 pt sidebar animating in and out, ten times, a few frames each.
+        for _ in 0..<10 {
+            for w in [1220, 1140, 1040] + [1140, 1220, 1280] {
+                canvas.setFrameSize(NSSize(width: CGFloat(w), height: 800))
+                canvas.layout()
+            }
+        }
+        try await settle()
+        #expect(canvas.text.lineAnchor(forPage: canvas.spreadStart) == top, "after sidebar toggles")
+        let started = canvas.fullLayoutsStarted - startedBefore
+        print("CREEP full layouts started: \(started)")
+        #expect(started <= 3, "full layouts should wait for relayouts to settle")
     }
 }
