@@ -1,6 +1,7 @@
 #[cfg(target_os = "macos")]
 use crate::app::spotify::applescript::{NowPlaying, SpotifyWatcher};
 use crate::app::{AppState, config::Config, spotify::web::TrackMeta, task::ManagedTask};
+use crate::host::AppHandle;
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use isolang::Language;
 use library::{
@@ -18,7 +19,6 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, oneshot, watch};
 const LYRICS_MEM_CACHE_CAPACITY: usize = 64;
 const PROGRESS_THROTTLE: Duration = Duration::from_millis(400);
@@ -310,10 +310,9 @@ pub struct TrackLyricsState {
     pub translation: Option<LyricsTranslation>,
 }
 
-#[tauri::command]
 pub async fn start_spotify_watcher(
     #[allow(unused_variables)] app: AppHandle,
-    #[allow(unused_variables)] state: tauri::State<'_, AppState>,
+    #[allow(unused_variables)] state: crate::host::State<'_, AppState>,
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -330,9 +329,8 @@ pub async fn start_spotify_watcher(
     }
 }
 
-#[tauri::command]
 pub async fn stop_spotify_watcher(
-    #[allow(unused_variables)] state: tauri::State<'_, AppState>,
+    #[allow(unused_variables)] state: crate::host::State<'_, AppState>,
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -343,9 +341,8 @@ pub async fn stop_spotify_watcher(
 }
 
 #[cfg(target_os = "macos")]
-#[tauri::command]
 pub async fn get_now_playing(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
 ) -> Result<Option<NowPlaying>, String> {
     if let Some(np) = state.lyrics_state.watcher.current() {
         return Ok(Some(np));
@@ -357,9 +354,8 @@ pub async fn get_now_playing(
 }
 
 #[cfg(not(target_os = "macos"))]
-#[tauri::command]
 pub async fn get_now_playing(
-    _state: tauri::State<'_, AppState>,
+    _state: crate::host::State<'_, AppState>,
 ) -> Result<Option<serde_json::Value>, String> {
     Ok(None)
 }
@@ -435,9 +431,8 @@ async fn fetch_lyrics(
     }
     Ok(chosen)
 }
-#[tauri::command]
 pub async fn get_track_lyrics_state(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     track_id: String,
     target_lang: String,
     model: String,
@@ -448,7 +443,7 @@ pub async fn get_track_lyrics_state(
     state.lyrics_state.snapshot(track_id, tgt, model).await
 }
 #[cfg(feature = "e2e-bridge")]
-pub(crate) async fn resolve_track(
+pub async fn resolve_track(
     state: &AppState,
     app: &AppHandle,
     track: &TrackMeta,

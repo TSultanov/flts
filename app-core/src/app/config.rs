@@ -43,8 +43,7 @@ pub struct ProviderMeta {
     pub model_selection: Option<&'static str>,
 }
 
-#[tauri::command]
-pub async fn get_models(state: tauri::State<'_, AppState>) -> Result<Vec<Model>, String> {
+pub async fn get_models(state: crate::host::State<'_, AppState>) -> Result<Vec<Model>, String> {
     let config = state.config.borrow().clone();
     let keys = config.api_keys();
     let catalog = state.model_catalog.clone();
@@ -93,7 +92,6 @@ pub async fn get_models(state: tauri::State<'_, AppState>) -> Result<Vec<Model>,
         .collect())
 }
 
-#[tauri::command]
 pub fn get_translation_providers() -> Vec<ProviderMeta> {
     vec![
         ProviderMeta {
@@ -142,7 +140,6 @@ pub struct Language {
     pub local_name: Option<&'static str>,
 }
 
-#[tauri::command]
 pub fn get_languages() -> Vec<Language> {
     let mut languages: Vec<_> = isolang::languages()
         .map(|l| Language {
@@ -178,7 +175,6 @@ pub fn parse_language_code(code: Option<&str>) -> Option<String> {
         .map(|language| language.to_639_3().to_string())
 }
 
-#[tauri::command]
 pub fn parse_language_id(code: Option<String>) -> Option<String> {
     parse_language_code(code.as_deref())
 }

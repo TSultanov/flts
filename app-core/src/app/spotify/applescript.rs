@@ -7,10 +7,10 @@
 use std::time::Duration;
 
 use crate::app::task::ManagedTask;
+use crate::host::AppHandle;
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use log::{debug, warn};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
 use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time;

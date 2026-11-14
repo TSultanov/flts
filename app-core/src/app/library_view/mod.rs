@@ -15,6 +15,7 @@ pub mod imports;
 pub mod mutations;
 pub mod queries;
 mod render;
+pub mod text;
 
 pub use imports::*;
 pub use mutations::*;
@@ -270,6 +271,34 @@ impl<'a> LibraryView<'a> {
                 .collect()
         })
         .await
+    }
+
+    pub async fn get_paragraph_texts_batch(
+        &self,
+        book_id: Uuid,
+        paragraph_ids: Vec<usize>,
+        target_language: &Language,
+    ) -> anyhow::Result<text::ParagraphTexts> {
+        let book = self.library.get_book(&book_id).await?;
+        let info = book.info().clone();
+        let (count, target) = (info.paragraphs_count(), *target_language);
+        let paragraphs = book
+            .read(move |book| {
+                paragraph_ids
+                    .into_iter()
+                    .filter(|id| *id < count)
+                    .map(|id| {
+                        let original = book.paragraph(id)?.original().to_owned();
+                        let words = book.words(&target, id)?;
+                        Ok(text::paragraph_text(id, &original, words.as_ref()))
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()
+            })
+            .await?;
+        Ok(text::ParagraphTexts {
+            language: info.language.clone(),
+            paragraphs,
+        })
     }
 
     pub async fn list_books(
@@ -917,6 +946,29 @@ mod tests {
             flat_index,
             translation: translation.map(str::to_owned),
         }
+    }
+
+    #[test]
+    fn paragraph_text_maps_words_to_utf16_ranges() {
+        let pt = make_paragraph_translation(vec![translation_import::Sentence {
+            full_translation: "ignored".to_owned(),
+            words: vec![word("Über", &["Over"], false), word("<b>", &[], true)],
+        }]);
+        let view = view_from_import(&pt);
+        let text = super::text::paragraph_text(7, "Über <b>all</b>", Some(&view));
+        assert!(text.translated);
+        assert_eq!(text.text, "Über all");
+        assert_eq!(text.words[0].start, 0);
+        assert_eq!(text.words[0].len, 4);
+        assert_eq!(text.words[0].translation.as_deref(), Some("Over"));
+        assert_eq!(
+            text.runs,
+            vec![super::text::MarkRun {
+                start: 5,
+                len: 3,
+                marks: 2
+            }]
+        );
     }
 
     #[test]

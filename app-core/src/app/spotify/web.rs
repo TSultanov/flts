@@ -21,12 +21,12 @@ use std::collections::{HashMap, VecDeque};
 use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant};
 
+use crate::host::AppHandle;
 use base64::Engine;
 use log::{debug, warn};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
-use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
@@ -1087,32 +1087,28 @@ async fn delete_refresh_token() -> anyhow::Result<()> {
 
 // ----- Tauri commands ----------------------------------------------------
 
-#[tauri::command]
 pub async fn spotify_web_connect(
-    state: tauri::State<'_, crate::app::AppState>,
+    state: crate::host::State<'_, crate::app::AppState>,
     client_id: String,
 ) -> Result<(), String> {
     state.spotify_web.connect(client_id).await
 }
 
-#[tauri::command]
 pub async fn spotify_web_disconnect(
-    state: tauri::State<'_, crate::app::AppState>,
+    state: crate::host::State<'_, crate::app::AppState>,
 ) -> Result<(), String> {
     state.spotify_web.disconnect().await;
     Ok(())
 }
 
-#[tauri::command]
 pub async fn spotify_web_status(
-    state: tauri::State<'_, crate::app::AppState>,
+    state: crate::host::State<'_, crate::app::AppState>,
 ) -> Result<SpotifyWebStatus, String> {
     Ok(state.spotify_web.status().await)
 }
 
-#[tauri::command]
 pub async fn spotify_web_get_queue(
-    state: tauri::State<'_, crate::app::AppState>,
+    state: crate::host::State<'_, crate::app::AppState>,
 ) -> Result<Option<QueueSnapshot>, String> {
     Ok(state.spotify_web.tx.borrow().clone())
 }
@@ -1120,7 +1116,6 @@ pub async fn spotify_web_get_queue(
 /// Open a URL in the user's default external browser. Used by settings links
 /// (e.g. the Spotify Developer Dashboard) — the webview would otherwise just
 /// navigate away from the app.
-#[tauri::command]
 pub async fn open_external_url(url: String) -> Result<(), String> {
     // Only allow http(s) — anything else (file://, javascript:, ...) is either
     // unsafe or unintended for a settings page button.

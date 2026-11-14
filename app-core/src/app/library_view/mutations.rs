@@ -6,9 +6,8 @@ use crate::app::AppState;
 
 use super::{CardCreationResultView, LibraryView};
 
-#[tauri::command]
 pub async fn save_book_reading_state(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     book_id: Uuid,
     chapter_id: usize,
     paragraph_id: usize,
@@ -22,9 +21,8 @@ pub async fn save_book_reading_state(
         .map_err(|err| err.to_string())
 }
 
-#[tauri::command]
 pub async fn move_book(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     book_id: Uuid,
     path: Vec<String>,
 ) -> Result<(), String> {
@@ -36,8 +34,10 @@ pub async fn move_book(
         .map_err(|err| err.to_string())
 }
 
-#[tauri::command]
-pub async fn delete_book(state: tauri::State<'_, AppState>, book_id: Uuid) -> Result<(), String> {
+pub async fn delete_book(
+    state: crate::host::State<'_, AppState>,
+    book_id: Uuid,
+) -> Result<(), String> {
     let library = state.library().await?;
 
     LibraryView::create(state.inner(), library)
@@ -46,9 +46,8 @@ pub async fn delete_book(state: tauri::State<'_, AppState>, book_id: Uuid) -> Re
         .map_err(|err| err.to_string())
 }
 
-#[tauri::command]
 pub async fn create_card_for_word(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     book_id: Uuid,
     paragraph_id: usize,
     sentence_id: usize,

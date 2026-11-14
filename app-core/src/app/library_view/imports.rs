@@ -7,9 +7,8 @@ use crate::app::AppState;
 
 use super::LibraryView;
 
-#[tauri::command]
 pub async fn import_plain_text(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     title: String,
     text: String,
     source_language_id: String,
@@ -26,7 +25,6 @@ pub async fn import_plain_text(
         .map_err(|err| err.to_string())
 }
 
-#[tauri::command]
 pub async fn parse_epub(epub_base64: String) -> Result<EpubBook, String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(epub_base64.as_bytes())
@@ -37,9 +35,8 @@ pub async fn parse_epub(epub_base64: String) -> Result<EpubBook, String> {
         .map_err(|err| err.to_string())
 }
 
-#[tauri::command]
 pub async fn import_epub(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     book: EpubBook,
     source_language_id: String,
 ) -> Result<Uuid, String> {

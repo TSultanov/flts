@@ -19,7 +19,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tauri::Emitter;
+
 use tokio::sync::{mpsc, oneshot, watch};
 use uuid::Uuid;
 const MAX_TRANSLATION_ATTEMPTS: u32 = 4;
@@ -155,7 +155,7 @@ impl TranslationQueue {
         gemini: GeminiPromptCache,
         context: Box<dyn ChapterContextProvider>,
         config: &Config,
-        app: tauri::AppHandle,
+        app: crate::host::AppHandle,
         library_tx: watch::Sender<Option<Library>>,
     ) -> Option<(Self, ManagedTask)> {
         let target = Language::from_639_3(&config.target_language_id)?;
@@ -268,7 +268,7 @@ fn admit(
     use_cache: bool,
     next_id: &mut usize,
     activities: &mut Activities,
-    app: &tauri::AppHandle,
+    app: &crate::host::AppHandle,
 ) -> Job {
     let request_id = *next_id;
     *next_id += 1;
@@ -314,7 +314,7 @@ async fn scheduler(
     mut requests: mpsc::Receiver<Request>,
     mut stop: watch::Receiver<bool>,
     publish: watch::Sender<Arc<Activities>>,
-    app: tauri::AppHandle,
+    app: crate::host::AppHandle,
     library_tx: watch::Sender<Option<Library>>,
 ) {
     let mut activities = HashMap::new();

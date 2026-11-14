@@ -26,8 +26,6 @@ use log::{info, warn};
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use tauri::Emitter;
-
 use crate::app::{
     anki_sync::AnkiSyncTask, chapter_context::SummaryBackedChapterContext, config::Config,
     summary_generation_queue::SummaryGenerationQueue, translation_queue::TranslationQueue,
@@ -78,7 +76,7 @@ impl Display for AppError {
 /// Sync-roster device name: OS hostname sans `.local`, or a platform label when
 /// the hostname is useless (iOS reports `localhost`).
 fn default_device_name() -> String {
-    let raw = tauri_plugin_os::hostname();
+    let raw = crate::host::hostname();
     let host = raw.trim().trim_end_matches(".local").trim();
     if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") {
         return host.to_string();
@@ -96,17 +94,16 @@ fn default_device_name() -> String {
 /// Config dir (`config.json`, Syncthing home). `FLTS_CONFIG_DIR` overrides so
 /// E2E runs are isolated. Android has no XDG/HOME, so it goes through Tauri's
 /// path API — `app` is required there, ignored elsewhere.
-fn resolve_config_dir(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBuf> {
+fn resolve_config_dir(app: Option<&crate::host::AppHandle>) -> anyhow::Result<PathBuf> {
     if let Some(dir) = std::env::var_os("FLTS_CONFIG_DIR").filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(dir));
     }
     #[cfg(target_os = "android")]
     {
-        use tauri::Manager;
         let app = app.ok_or_else(|| {
             anyhow::anyhow!("AppHandle required to resolve config dir on Android")
         })?;
-        return Ok(app.path().app_config_dir()?);
+        return Ok(app.platform_dirs()?.config);
     }
     #[cfg(not(target_os = "android"))]
     {
@@ -126,16 +123,15 @@ fn cache_dir_override(env: Option<String>) -> Option<PathBuf> {
 /// Per-platform cache dir (transient, OS-evictable). `FLTS_CONFIG_DIR` overrides
 /// as `<dir>/cache`. The empty `ProjectDirs` qualifier is load-bearing: changing
 /// it would relocate existing installs' caches.
-fn resolve_cache_dir(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBuf> {
+fn resolve_cache_dir(app: Option<&crate::host::AppHandle>) -> anyhow::Result<PathBuf> {
     if let Some(dir) = cache_dir_override(std::env::var("FLTS_CONFIG_DIR").ok()) {
         return Ok(dir);
     }
     #[cfg(target_os = "android")]
     {
-        use tauri::Manager;
         let app = app
             .ok_or_else(|| anyhow::anyhow!("AppHandle required to resolve cache dir on Android"))?;
-        return Ok(app.path().app_cache_dir()?);
+        return Ok(app.platform_dirs()?.cache);
     }
     #[cfg(not(target_os = "android"))]
     {
@@ -150,7 +146,7 @@ fn resolve_cache_dir(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBuf> 
 /// The iOS data dir is `Library/Application Support`: invisible to the Files app
 /// and backed up by default, so no `isExcludedFromBackup` handling is needed.
 /// `app` is required on Android, ignored elsewhere.
-fn resolve_library_root(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBuf> {
+fn resolve_library_root(app: Option<&crate::host::AppHandle>) -> anyhow::Result<PathBuf> {
     if let Some(dir) = std::env::var_os("FLTS_LIBRARY_DIR").filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(dir));
     }
@@ -159,11 +155,10 @@ fn resolve_library_root(app: Option<&tauri::AppHandle>) -> anyhow::Result<PathBu
     }
     #[cfg(target_os = "android")]
     {
-        use tauri::Manager;
         let app = app.ok_or_else(|| {
             anyhow::anyhow!("AppHandle required to resolve library root on Android")
         })?;
-        return Ok(app.path().app_data_dir()?.join("library"));
+        return Ok(app.platform_dirs()?.data.join("library"));
     }
     #[cfg(not(target_os = "android"))]
     {
@@ -272,9 +267,9 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
 fn spawn_catalog_prefetch(
     catalog: ModelCatalog,
     config: &Config,
-) -> tauri::async_runtime::JoinHandle<()> {
+) -> crate::host::async_runtime::JoinHandle<()> {
     let keys = config.api_keys();
-    tauri::async_runtime::spawn(async move {
+    crate::host::async_runtime::spawn(async move {
         for provider in [
             TranslationProvider::Google,
             TranslationProvider::Openai,
@@ -347,7 +342,7 @@ struct ImportProgress {
 /// The one place `PeerChanges` become frontend events; the watcher and the
 /// sync poll both end here.
 fn emit_peer_changes(
-    app: &tauri::AppHandle,
+    app: &crate::host::AppHandle,
     gated: &gated_state::GatedState,
     changes: &PeerChanges,
 ) {
@@ -392,7 +387,7 @@ fn emit_peer_changes(
 /// Watcher-independent adoption of peers' writes, for platforms whose watcher
 /// polls or misses events.
 async fn adopt_peer_changes(
-    app: tauri::AppHandle,
+    app: crate::host::AppHandle,
     gated: gated_state::GatedState,
     retired: Vec<u64>,
 ) -> sync_daemon::StoreIssues {
@@ -416,7 +411,7 @@ async fn adopt_peer_changes(
 
 #[derive(Clone)]
 pub struct AppState {
-    app: tauri::AppHandle,
+    app: crate::host::AppHandle,
     config: watch::Receiver<Config>,
     gated: gated_state::GatedState,
     lifecycle: lifecycle::Lifecycle,
@@ -428,11 +423,14 @@ pub struct AppState {
     pub spotify_web: spotify::web::SpotifyWebState,
 }
 impl AppState {
+    pub fn host(&self) -> crate::host::AppHandle {
+        self.app.clone()
+    }
     pub fn new(
-        app: tauri::AppHandle,
+        app: crate::host::AppHandle,
         watcher: LibraryWatcher,
     ) -> anyhow::Result<(Self, task::ManagedTask)> {
-        let runtime = tauri::async_runtime::handle();
+        let runtime = crate::host::async_runtime::handle();
         let _enter = runtime.inner().enter();
         let backend = BackendState::new(app.clone(), watcher)?;
         let config = backend.config.subscribe();
@@ -620,7 +618,7 @@ impl AppState {
 }
 
 struct BackendState {
-    app: tauri::AppHandle,
+    app: crate::host::AppHandle,
     config_path: PathBuf,
     config: watch::Sender<Config>,
     /// Everything `eval_config` installs; see `gated_state`.
@@ -632,7 +630,7 @@ struct BackendState {
     summary_owner: Option<task::ManagedTask>,
     anki_owner: Option<task::ManagedTask>,
     sync_owner: Option<task::ManagedTask>,
-    catalog_prefetch: Option<tauri::async_runtime::JoinHandle<()>>,
+    catalog_prefetch: Option<crate::host::async_runtime::JoinHandle<()>>,
     /// Stable across `eval_config` re-spawns. The transient `AnkiSyncTask`
     /// holds a clone and pushes status into it on every tick.
     anki_sync_status: watch::Sender<crate::app::anki_sync::AnkiSyncStatus>,
@@ -649,7 +647,7 @@ struct BackendState {
 }
 
 impl BackendState {
-    pub fn new(app: tauri::AppHandle, watcher: LibraryWatcher) -> anyhow::Result<Self> {
+    pub fn new(app: crate::host::AppHandle, watcher: LibraryWatcher) -> anyhow::Result<Self> {
         info!("Startup!");
 
         let config_dir = resolve_config_dir(Some(&app))?;
@@ -668,7 +666,7 @@ impl BackendState {
         };
 
         let model_catalog = {
-            let runtime = tauri::async_runtime::handle();
+            let runtime = crate::host::async_runtime::handle();
             let _enter = runtime.inner().enter();
             ModelCatalog::new(
                 resolve_cache_dir(Some(&app))?,
@@ -1520,23 +1518,20 @@ mod tests {
     }
 }
 
-#[tauri::command]
 pub async fn get_anki_sync_status(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
 ) -> Result<crate::app::anki_sync::AnkiSyncStatus, String> {
     Ok(state.anki_sync_status())
 }
 
-#[tauri::command]
 pub async fn sync_anki_now(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
 ) -> Result<crate::app::anki_sync::SyncReportDto, String> {
     state.sync_anki_now().await.map_err(|err| err.to_string())
 }
 
-#[tauri::command]
 pub async fn update_config(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     config: Config,
 ) -> Result<(), String> {
     info!("Update config request");
@@ -1548,16 +1543,14 @@ pub async fn update_config(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn get_config(state: tauri::State<'_, AppState>) -> Result<Config, String> {
+pub async fn get_config(state: crate::host::State<'_, AppState>) -> Result<Config, String> {
     Ok(state.config.borrow().clone())
 }
 
 /// Deletes every FLTS-created Gemini server-side context cache (display name
 /// prefix "flts-") and clears the local pointers; returns the count. Safe during
 /// active translation: chapters self-heal via the 403/404 evict-and-retry path.
-#[tauri::command]
-pub async fn purge_gemini_caches(state: tauri::State<'_, AppState>) -> Result<usize, String> {
+pub async fn purge_gemini_caches(state: crate::host::State<'_, AppState>) -> Result<usize, String> {
     let api_key = state
         .config
         .borrow()
@@ -1593,16 +1586,14 @@ pub async fn purge_gemini_caches(state: tauri::State<'_, AppState>) -> Result<us
 }
 
 /// The app-managed library location, for read-only display in settings.
-#[tauri::command]
-pub async fn get_library_root(app: tauri::AppHandle) -> Result<String, String> {
+pub async fn get_library_root(app: crate::host::AppHandle) -> Result<String, String> {
     resolve_library_root(Some(&app))
         .map(|p| p.to_string_lossy().into_owned())
         .map_err(|err| err.to_string())
 }
 
 /// Opens the library location in the desktop OS file manager.
-#[tauri::command]
-pub async fn reveal_library_root(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn reveal_library_root(app: crate::host::AppHandle) -> Result<(), String> {
     let path = resolve_library_root(Some(&app)).map_err(|err| err.to_string())?;
     let _ = fs::create_dir_all(&path);
     reveal_in_file_manager(&path).map_err(|err| err.to_string())
@@ -1635,9 +1626,8 @@ fn reveal_in_file_manager(path: &Path) -> anyhow::Result<()> {
     }
 }
 
-#[tauri::command]
 pub async fn translate_paragraph(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     book_id: Uuid,
     paragraph_id: usize,
     model: String,
@@ -1649,9 +1639,8 @@ pub async fn translate_paragraph(
         .map_err(|err| err.to_string())
 }
 
-#[tauri::command]
 pub async fn translate_chapter(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     book_id: Uuid,
     chapter_id: usize,
     model: String,
@@ -1663,9 +1652,8 @@ pub async fn translate_chapter(
         .map_err(|err| err.to_string())
 }
 
-#[tauri::command]
 pub async fn get_paragraph_translation_activity(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     book_id: Uuid,
     paragraph_id: usize,
 ) -> Result<Option<translation_queue::ParagraphTranslationActivity>, String> {
@@ -1675,9 +1663,8 @@ pub async fn get_paragraph_translation_activity(
         .map_err(|err| err.to_string())
 }
 
-#[tauri::command]
 pub async fn list_paragraph_translation_activity(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
 ) -> Result<Vec<translation_queue::ActiveParagraphTranslation>, String> {
     state
         .list_paragraph_translation_activity()
@@ -1685,9 +1672,8 @@ pub async fn list_paragraph_translation_activity(
         .map_err(|err| err.to_string())
 }
 
-#[tauri::command]
 pub async fn get_system_definition(
-    #[allow(unused_variables)] app: tauri::AppHandle,
+    #[allow(unused_variables)] app: crate::host::AppHandle,
     #[allow(unused_variables)] word: String,
     #[allow(unused_variables)] source_lang: String,
     #[allow(unused_variables)] target_lang: String,
@@ -1718,9 +1704,8 @@ pub async fn get_system_definition(
     }
 }
 
-#[tauri::command]
 pub async fn show_system_dictionary(
-    #[allow(unused_variables)] app: tauri::AppHandle,
+    #[allow(unused_variables)] app: crate::host::AppHandle,
     #[allow(unused_variables)] word: String,
 ) -> Result<(), String> {
     #[cfg(target_os = "ios")]

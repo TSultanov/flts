@@ -10,7 +10,7 @@ use std::{
     collections::{HashSet, VecDeque},
     time::SystemTime,
 };
-use tauri::Emitter;
+
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
@@ -33,7 +33,7 @@ impl SummaryGenerationQueue {
     pub fn init(
         library_rx: watch::Receiver<Option<Library>>,
         config: &Config,
-        app: tauri::AppHandle,
+        app: crate::host::AppHandle,
     ) -> (Self, ManagedTask) {
         let provider = config.translation_provider;
         let model = library::translator::catalog::effective_model_id(provider, &config.model);
@@ -114,7 +114,7 @@ async fn process_book(
     id: Uuid,
     library: &Library,
     summarizer: &ChapterSummarizer,
-    app: &tauri::AppHandle,
+    app: &crate::host::AppHandle,
 ) -> anyhow::Result<()> {
     let handle: BookHandle = library.get_book(&id).await?;
     loop {
@@ -196,7 +196,7 @@ pub fn concat_prior_summaries(summaries: &ChapterSummaries, chapter_index: usize
 }
 
 fn emit_progress(
-    app: &tauri::AppHandle,
+    app: &crate::host::AppHandle,
     book_id: Uuid,
     current: usize,
     total: usize,

@@ -1,68 +1,62 @@
-use library::library::file_watcher::LibraryWatcher;
-use log::{info, warn};
+use log::info;
+use serde_json::Value;
 use tauri::{Builder, Emitter, Manager, RunEvent};
 
-pub mod app;
 #[cfg(feature = "e2e-bridge")]
 pub mod bridge;
 
-/// Raises the open-file soft limit and returns a line for the caller to log once
-/// the logger exists; this must run before it does.
-///
-/// iOS gives the whole process 256 descriptors, shared by WebKit, the embedded
-/// Syncthing engine, and library I/O, and exhaustion surfaces as EMFILE far from
-/// the culprit. The Go runtime raises it too, but from a c-archive constructor
-/// that races `main`.
-///
-/// Targets descend because Darwin refuses a soft limit above `OPEN_MAX` /
-/// `kern.maxfilesperproc` even under an unlimited hard limit; if none land, the
-/// inherited limit stands.
-#[cfg(unix)]
-fn raise_open_file_limit() -> String {
-    const TARGETS: [libc::rlim_t; 3] = [10_240, 4_096, 1_024];
+/// Delivers core events and main-thread work through the Tauri app.
+struct TauriHost(tauri::AppHandle);
 
-    let mut lim = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
-        return format!(
-            "open-file limit: getrlimit failed ({})",
-            std::io::Error::last_os_error()
-        );
-    }
-
-    let ceiling = if lim.rlim_max == libc::RLIM_INFINITY {
-        libc::rlim_t::MAX
-    } else {
-        lim.rlim_max
-    };
-
-    for target in TARGETS {
-        if target <= lim.rlim_cur || target > ceiling {
-            continue;
-        }
-        let want = libc::rlimit {
-            rlim_cur: target,
-            rlim_max: lim.rlim_max,
-        };
-        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &want) } == 0 {
-            return format!("open-file limit raised {} -> {target}", lim.rlim_cur);
+impl app_core::Host for TauriHost {
+    fn emit(&self, event: &str, payload: Value) {
+        if let Err(err) = self.0.emit(event, payload) {
+            log::warn!("Failed to emit {event}: {err}");
         }
     }
 
-    format!("open-file limit left at {}", lim.rlim_cur)
+    fn run_on_main_thread(&self, f: Box<dyn FnOnce() + Send>) -> Result<(), String> {
+        self.0.run_on_main_thread(f).map_err(|err| err.to_string())
+    }
+
+    #[cfg(target_os = "android")]
+    fn platform_dirs(&self) -> Option<app_core::PlatformDirs> {
+        let path = self.0.path();
+        Some(app_core::PlatformDirs {
+            config: path.app_config_dir().ok()?,
+            cache: path.app_cache_dir().ok()?,
+            data: path.app_data_dir().ok()?,
+        })
+    }
 }
 
-#[cfg(not(unix))]
-fn raise_open_file_limit() -> String {
-    "open-file limit: not adjusted (non-unix)".to_string()
+/// Every frontend command goes through the core's command table.
+fn invoke(invoke: tauri::ipc::Invoke) -> bool {
+    let cmd = invoke.message.command().to_string();
+    let args = match invoke.message.payload() {
+        tauri::ipc::InvokeBody::Json(value) => value.clone(),
+        tauri::ipc::InvokeBody::Raw(_) => Value::Object(Default::default()),
+    };
+    let state = invoke
+        .message
+        .webview()
+        .state::<app_core::AppState>()
+        .inner()
+        .clone();
+    invoke.resolver.respond_async(async move {
+        app_core::dispatch::dispatch(&state, &cmd, args)
+            .await
+            .map_err(tauri::ipc::InvokeError)
+    });
+    true
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Before anything else opens a file — including the webview.
-    let fd_limit = raise_open_file_limit();
+    let fd_limit = app_core::raise_open_file_limit();
+    // One runtime for the core and Tauri.
+    tauri::async_runtime::set(app_core::host::async_runtime::handle().inner().clone());
 
     #[allow(unused_mut)]
     let mut context = tauri::generate_context!();
@@ -122,89 +116,9 @@ pub fn run() {
 
             info!("{fd_limit}");
 
-            info!("Creating watcher");
-            let mut watcher = LibraryWatcher::new()?;
-            let mut recv = watcher
-                .take_recv()
-                .expect("LibraryWatcher receiver already taken");
-            let (app_state, runtime_owner) =
-                crate::app::AppState::new(app.handle().clone(), watcher)?;
-            app.manage(runtime_owner);
-            app.manage(app_state.clone());
-
-            info!("Spawning watch->emit bridges");
-            {
-                let mut rx = app_state.subscribe_config();
-                let app = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    while rx.changed().await.is_ok() {
-                        info!("Emitting \"config_updated\"");
-                        if let Err(err) = app.emit("config_updated", ()) {
-                            warn!("Failed to emit config_updated: {err}");
-                        }
-                    }
-                });
-            }
-            {
-                let mut rx = app_state.subscribe_library();
-                let app = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    while rx.changed().await.is_ok() {
-                        info!("Emitting \"library_updated\"");
-                        if let Err(err) = app.emit("library_updated", ()) {
-                            warn!("Failed to emit library_updated: {err}");
-                        }
-                    }
-                });
-            }
-            {
-                let mut rx = app_state.subscribe_anki_sync_status();
-                let app = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    while rx.changed().await.is_ok() {
-                        if let Err(err) = app.emit("anki_sync_status_changed", ()) {
-                            warn!("Failed to emit anki_sync_status_changed: {err}");
-                        }
-                    }
-                });
-            }
-
-            {
-                let mut rx = app_state.subscribe_sync_status();
-                let app = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    while rx.changed().await.is_ok() {
-                        if let Err(err) = app.emit("sync_status_changed", ()) {
-                            warn!("Failed to emit sync_status_changed: {err}");
-                        }
-                    }
-                });
-            }
-
-            info!("Spawning async init");
-            let resume_state = app_state.clone();
-            tauri::async_runtime::spawn(async move {
-                // Publish first: commands gate on it, and the steps below must
-                // not be able to withhold it.
-                let outcome = resume_state.eval_config().await.map_err(|err| {
-                    warn!("Failed to evaluate config at startup: {err}");
-                    err.to_string()
-                });
-                resume_state.publish_ready(outcome);
-
-                // Restore Spotify Web credentials from the keychain, so a token
-                // is in hand when start_spotify_watcher begins polling.
-                let client_id = resume_state.config_borrow_client_id();
-                resume_state.spotify_web.try_resume(client_id).await;
-
-                while let Some(event) = recv.recv().await {
-                    app_state
-                        .handle_file_change_event(&event)
-                        .await
-                        .unwrap_or_else(|err| warn!("Failed to process event {event:?}: {err}"));
-                }
-                warn!("LibraryWatcher sender disconnected; file change loop exiting");
-            });
+            let core = app_core::start(app_core::AppHandle::new(TauriHost(app.handle().clone())))?;
+            app.manage(core.owner);
+            app.manage(core.state);
 
             #[cfg(feature = "e2e-bridge")]
             if let Ok(port) = std::env::var("FLTS_E2E_BRIDGE_PORT") {
@@ -213,72 +127,12 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            app::config::get_models,
-            app::config::get_languages,
-            app::config::parse_language_id,
-            app::get_config,
-            app::get_library_root,
-            app::reveal_library_root,
-            app::update_config,
-            app::purge_gemini_caches,
-            app::get_anki_sync_status,
-            app::sync_anki_now,
-            app::sync::get_sync_status,
-            app::sync::sync_get_this_device,
-            app::sync::sync_web_ui_url,
-            app::sync::sync_set_device_name,
-            app::sync::sync_wake,
-            app::sync::sync_set_enabled,
-            app::sync::sync_list_devices,
-            app::sync::sync_list_pending,
-            app::sync::sync_add_device,
-            app::sync::sync_remove_device,
-            app::sync::sync_reset_identity,
-            app::sync::sync_keep_identity,
-            app::translate_paragraph,
-            app::translate_chapter,
-            app::get_paragraph_translation_activity,
-            app::list_paragraph_translation_activity,
-            app::library_view::list_books,
-            app::library_view::list_book_chapters,
-            app::library_view::get_book_chapter_paragraph_ids,
-            app::library_view::get_paragraph_view,
-            app::library_view::get_paragraph_originals_batch,
-            app::library_view::get_paragraph_html_batch,
-            app::config::get_translation_providers,
-            app::library_view::get_word_info,
-            app::library_view::create_card_for_word,
-            app::library_view::import_plain_text,
-            app::library_view::parse_epub,
-            app::library_view::import_epub,
-            app::library_view::get_book_reading_state,
-            app::library_view::get_book_summary_status,
-            app::library_view::save_book_reading_state,
-            app::library_view::move_book,
-            app::library_view::delete_book,
-            app::get_system_definition,
-            app::show_system_dictionary,
-            app::lyrics::start_spotify_watcher,
-            app::lyrics::stop_spotify_watcher,
-            app::lyrics::get_now_playing,
-            app::lyrics::get_track_lyrics_state,
-            app::spotify::web::spotify_web_connect,
-            app::spotify::web::spotify_web_disconnect,
-            app::spotify::web::spotify_web_status,
-            app::spotify::web::spotify_web_get_queue,
-            app::spotify::cdp::spotify_cdp_status,
-            app::spotify::cdp::spotify_restart_with_devtools,
-            app::spotify::cdp::spotify_login_agent_status,
-            app::spotify::cdp::spotify_install_login_agent,
-            app::spotify::cdp::spotify_remove_login_agent,
-            app::spotify::web::open_external_url,
-        ])
+        .invoke_handler(invoke)
         .build(context)
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let RunEvent::Exit = event {
-                let app_state = app_handle.state::<crate::app::AppState>();
+                let app_state = app_handle.state::<app_core::AppState>();
                 let app_state = app_state.inner().clone();
                 tauri::async_runtime::block_on(async move {
                     app_state.shutdown().await;

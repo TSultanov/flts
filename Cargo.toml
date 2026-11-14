@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "app-core",
   "cli",
   "e2e-sims",
   "library",
@@ -34,6 +35,11 @@ opt-level = "s"
 lto = "thin"
 panic = "abort"
 strip = "symbols"
+
+# Stripped proc-macro dylibs fail to load on current macOS ("mis-aligned
+# LINKEDIT string pool"); build scripts and proc macros keep their symbols.
+[profile.release.build-override]
+strip = "none"
 
 [profile.release-ship]
 inherits = "release"

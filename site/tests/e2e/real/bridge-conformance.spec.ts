@@ -10,7 +10,7 @@ import { test, expect } from "../../real/fixtures";
 /** Must clear the backend's own 30s keychain bound. */
 const KEYCHAIN_BOUND_MS = 45_000;
 
-/** Mirror of `COMMANDS` in site/src-tauri/src/bridge.rs. Keep in lockstep. */
+/** Mirror of `COMMANDS` in app-core/src/dispatch.rs. Keep in lockstep. */
 const ALL_COMMANDS = [
   "get_models",
   "get_languages",
@@ -44,6 +44,7 @@ const ALL_COMMANDS = [
   "get_paragraph_view",
   "get_paragraph_originals_batch",
   "get_paragraph_html_batch",
+  "get_paragraph_texts_batch",
   "get_translation_providers",
   "get_word_info",
   "create_card_for_word",
@@ -260,6 +261,7 @@ test.describe("bridge conformance", () => {
       ["get_paragraph_view", { bookId, paragraphId }],
       ["get_paragraph_originals_batch", { bookId, paragraphIds }],
       ["get_paragraph_html_batch", { bookId, paragraphIds }],
+      ["get_paragraph_texts_batch", { bookId, paragraphIds }],
       ["get_word_info", { bookId, paragraphId, sentenceId: 0, wordId: 0 }],
       ["get_book_reading_state", { bookId }],
       ["get_book_summary_status", { bookId }],
@@ -357,7 +359,7 @@ test.describe("bridge conformance", () => {
     // A command added to the bridge must fail here, not go untested.
     const bridgeRs = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
-      "../../../src-tauri/src/bridge.rs",
+      "../../../../app-core/src/dispatch.rs",
     );
     const src = fs.readFileSync(bridgeRs, "utf8");
     const block = /pub const COMMANDS: &\[&str\] = &\[([\s\S]*?)\];/.exec(src);

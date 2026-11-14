@@ -8,9 +8,8 @@ use super::{
     ParagraphHtml, ParagraphOriginal, ParagraphView, WordView,
 };
 
-#[tauri::command]
 pub async fn list_books(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
 ) -> Result<Vec<LibraryBookMetadataView>, String> {
     let target_language_id = { state.config.borrow().target_language_id.clone() };
     let target_language = Language::from_639_3(&target_language_id);
@@ -22,9 +21,8 @@ pub async fn list_books(
         .map_err(|err| err.to_string())
 }
 
-#[tauri::command]
 pub async fn list_book_chapters(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     book_id: Uuid,
 ) -> Result<Vec<ChapterView>, String> {
     let target_language_id = { state.config.borrow().target_language_id.clone() };
@@ -38,9 +36,8 @@ pub async fn list_book_chapters(
         .map_err(|err| err.to_string())
 }
 
-#[tauri::command]
 pub async fn get_book_chapter_paragraph_ids(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     book_id: Uuid,
     chapter_id: usize,
 ) -> Result<Vec<usize>, String> {
@@ -52,9 +49,8 @@ pub async fn get_book_chapter_paragraph_ids(
         .map_err(|err| err.to_string())
 }
 
-#[tauri::command]
 pub async fn get_word_info(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     book_id: Uuid,
     paragraph_id: usize,
     sentence_id: usize,
@@ -80,9 +76,8 @@ pub async fn get_word_info(
         .map_err(|err| err.to_string())
 }
 
-#[tauri::command]
 pub async fn get_paragraph_view(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     book_id: Uuid,
     paragraph_id: usize,
 ) -> Result<ParagraphView, String> {
@@ -100,9 +95,8 @@ pub async fn get_paragraph_view(
         .map_err(|err| err.to_string())
 }
 
-#[tauri::command]
 pub async fn get_paragraph_originals_batch(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     book_id: Uuid,
     paragraph_ids: Vec<usize>,
 ) -> Result<Vec<ParagraphOriginal>, String> {
@@ -115,9 +109,8 @@ pub async fn get_paragraph_originals_batch(
         .map_err(|err| err.to_string())
 }
 
-#[tauri::command]
 pub async fn get_paragraph_html_batch(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     book_id: Uuid,
     paragraph_ids: Vec<usize>,
 ) -> Result<Vec<ParagraphHtml>, String> {
@@ -135,9 +128,28 @@ pub async fn get_paragraph_html_batch(
         .map_err(|err| err.to_string())
 }
 
-#[tauri::command]
+/// Native shells' reader feed: text plus ranges, never HTML.
+pub async fn get_paragraph_texts_batch(
+    state: crate::host::State<'_, AppState>,
+    book_id: Uuid,
+    paragraph_ids: Vec<usize>,
+) -> Result<super::text::ParagraphTexts, String> {
+    let library = state.library().await?;
+
+    let target_language_id = { state.config.borrow().target_language_id.clone() };
+    let Some(target_language) = Language::from_639_3(&target_language_id) else {
+        return Err("Library is not configured".into());
+    };
+
+    let library_view = LibraryView::create(state.inner(), library);
+    library_view
+        .get_paragraph_texts_batch(book_id, paragraph_ids, &target_language)
+        .await
+        .map_err(|err| err.to_string())
+}
+
 pub async fn get_book_summary_status(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     book_id: Uuid,
 ) -> Result<BookSummaryStatusView, String> {
     let library = state.library().await?;
@@ -157,9 +169,8 @@ pub async fn get_book_summary_status(
     })
 }
 
-#[tauri::command]
 pub async fn get_book_reading_state(
-    state: tauri::State<'_, AppState>,
+    state: crate::host::State<'_, AppState>,
     book_id: Uuid,
 ) -> Result<Option<BookReadingStateView>, String> {
     let library = state.library().await?;

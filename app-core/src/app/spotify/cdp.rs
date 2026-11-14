@@ -355,7 +355,6 @@ fn log_unavailable_once(port: u16) {
 
 // ----- restart command ------------------------------------------------------
 
-#[tauri::command]
 pub async fn spotify_cdp_status() -> Result<SpotifyCdpStatus, String> {
     let port = cdp_port();
     if devtools_ready(port).await {
@@ -379,7 +378,6 @@ pub async fn spotify_cdp_status() -> Result<SpotifyCdpStatus, String> {
 /// Relaunches Spotify with the DevTools flag so the lyrics bridge can attach.
 /// No-op when the bridge is already up; quits a running Spotify first (its
 /// session and playback position are restored on relaunch).
-#[tauri::command]
 pub async fn spotify_restart_with_devtools() -> Result<SpotifyCdpStatus, String> {
     let port = cdp_port();
     if devtools_ready(port).await {
@@ -454,7 +452,6 @@ fn login_agent_status_at(path: &std::path::Path) -> SpotifyLoginAgentStatus {
     }
 }
 
-#[tauri::command]
 pub async fn spotify_login_agent_status() -> Result<SpotifyLoginAgentStatus, String> {
     let path = login_agent_path()?;
     Ok(login_agent_status_at(&path))
@@ -464,7 +461,6 @@ pub async fn spotify_login_agent_status() -> Result<SpotifyLoginAgentStatus, Str
 /// login. Spotify's own "open at login" helper lives inside its signed bundle
 /// and can't carry the flag, so the user must turn that one off to avoid two
 /// launches racing.
-#[tauri::command]
 pub async fn spotify_install_login_agent() -> Result<SpotifyLoginAgentStatus, String> {
     let port = cdp_port();
     let path = login_agent_path()?;
@@ -488,7 +484,6 @@ pub async fn spotify_install_login_agent() -> Result<SpotifyLoginAgentStatus, St
     Ok(login_agent_status_at(&path))
 }
 
-#[tauri::command]
 pub async fn spotify_remove_login_agent() -> Result<SpotifyLoginAgentStatus, String> {
     let path = login_agent_path()?;
     let _ = launchctl(&["bootout", &domain_target()]).await;
