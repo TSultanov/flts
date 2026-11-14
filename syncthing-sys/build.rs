@@ -90,6 +90,8 @@ fn build_archive(go_dir: &Path, lib: &Path, target_os: &str) {
 
     if target_os == "ios" {
         apply_ios_cross_env(&mut cmd);
+    } else if target_os == "macos" {
+        apply_macos_cross_env(&mut cmd);
     } else if android {
         apply_android_cross_env(&mut cmd);
     }
@@ -186,6 +188,29 @@ fn run(cmd: &mut Command) {
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+/// Builds for the target arch (not the host's) at the deployment target the
+/// Rust side links with, so the archive fits a native app bundle.
+fn apply_macos_cross_env(cmd: &mut Command) {
+    println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let (goarch, clang_arch) = match arch.as_str() {
+        "aarch64" => ("arm64", "arm64"),
+        "x86_64" => ("amd64", "x86_64"),
+        other => panic!("unsupported macOS arch: {other}"),
+    };
+    let min = env::var("MACOSX_DEPLOYMENT_TARGET").unwrap_or_else(|_| "11.0".to_string());
+    let sdk_path = xcrun(&["--sdk", "macosx", "--show-sdk-path"]);
+    let clang = xcrun(&["--sdk", "macosx", "--find", "clang"]);
+    let min_flag = format!("-mmacosx-version-min={min}");
+    let cc = format!("{clang} -arch {clang_arch} -isysroot {sdk_path} {min_flag}");
+    cmd.env("GOOS", "darwin")
+        .env("GOARCH", goarch)
+        .env("CGO_ENABLED", "1")
+        .env("CC", cc)
+        .env("CGO_CFLAGS", &min_flag)
+        .env("CGO_LDFLAGS", &min_flag);
 }
 
 /// Points cgo's clang at the SDK matching the active iOS target.

@@ -1,0 +1,27 @@
+[package]
+name = "flts-ffi"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "flts_ffi"
+crate-type = ["staticlib", "cdylib", "lib"]
+
+[[bin]]
+name = "uniffi-bindgen-swift"
+path = "src/bin/uniffi-bindgen-swift.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+app-core = { path = "../app-core" }
+library = { path = "../library" }
+uniffi = "0.32"
+log = { workspace = true }
+serde_json = { workspace = true }
+thiserror = "2"
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+oslog = "0.2"

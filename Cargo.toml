@@ -4,6 +4,7 @@ members = [
   "app-core",
   "cli",
   "e2e-sims",
+  "flts-ffi",
   "library",
   "site/src-tauri",
   "sync-harness",

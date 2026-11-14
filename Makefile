@@ -30,6 +30,7 @@ IOS_IPA := $(TAURI_DIR)/gen/apple/build/arm64/$(PRODUCT).ipa
 .PHONY: all build dev deps check-deps hooks format \
 	build-macos build-ios build-android \
 	install-macos install-ios install-android \
+	build-macos-native install-macos-native test-macos-native test-macos-native-ui \
 	install\ macos install\ ios install\ android \
 	help
 
@@ -59,6 +60,28 @@ build: build-macos ## build the Tauri app for the current dev platform (macOS)
 
 build-macos: deps ## build macOS .app bundle (release-ship profile)
 	cd "$(SITE)" && cargo tauri build -- --profile $(MACOS_PROFILE)
+
+NATIVE := native
+NATIVE_APP := $(NATIVE)/build/DerivedData/Build/Products/Release/$(PRODUCT).app
+
+build-macos-native: ## build the native SwiftUI macOS app (Release, core in release-ship)
+	cd "$(NATIVE)" && xcodegen generate && xcodebuild -project FLTS.xcodeproj -scheme FLTS \
+		-configuration Release -derivedDataPath build/DerivedData build
+
+test-macos-native: ## run the native app's unit tests
+	cd "$(NATIVE)" && xcodegen generate && xcodebuild -project FLTS.xcodeproj -scheme FLTS \
+		-configuration Debug -derivedDataPath build/DerivedData test -only-testing:FLTSTests
+
+test-macos-native-ui: ## run the native UI tests (needs an unlocked session and FLTS_UITEST_CONFIG_DIR)
+	cd "$(NATIVE)" && xcodegen generate && TEST_RUNNER_FLTS_UITEST_CONFIG_DIR="$(FLTS_UITEST_CONFIG_DIR)" \
+		xcodebuild -project FLTS.xcodeproj -scheme FLTS -configuration Debug \
+		-derivedDataPath build/DerivedData test -only-testing:FLTSUITests
+
+install-macos-native: build-macos-native ## replace /Applications/FLTS.app with the native app
+	@if pgrep -xq "$(PRODUCT)"; then echo "quit $(PRODUCT) first: both apps share one library"; exit 1; fi
+	rm -rf "/Applications/$(PRODUCT).app"
+	ditto "$(NATIVE_APP)" "/Applications/$(PRODUCT).app"
+	@echo ">> installed native /Applications/$(PRODUCT).app"
 
 build-ios: deps ## build iOS IPA (Release; development export for device install)
 	cd "$(SITE)" && cargo tauri ios build --export-method debugging --ci
