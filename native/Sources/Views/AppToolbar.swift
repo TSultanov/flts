@@ -19,7 +19,8 @@ struct AppToolbarItems: ToolbarContent {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: syncSymbol)
-                            .symbolEffect(.rotate, isActive: syncBusy)
+                            // A pulse while busy: rotating spun the whole cloud.
+                            .symbolEffect(.pulse, isActive: syncBusy)
                         if model.sync.status.state == .syncing, let c = model.sync.status.completion {
                             Text("\(Int(c))%").font(.caption.monospacedDigit())
                         }
@@ -34,7 +35,7 @@ struct AppToolbarItems: ToolbarContent {
                     Task { await model.anki.syncNow() }
                 } label: {
                     Image(systemName: ankiSymbol)
-                        .symbolEffect(.rotate, isActive: model.anki.status.state == .syncing)
+                        .symbolEffect(.pulse, isActive: model.anki.status.state == .syncing)
                 }
                 .disabled(model.anki.status.state == .syncing)
                 .help(ankiHelp)
