@@ -114,7 +114,8 @@ on) it lands on the right page of that paragraph.
   fetches).
 - Reader selection: drag selects (Copy, ⌘C, Look Up); a click without a drag
   taps the word. Tested with synthesized mouse events.
-- UI tests (`make test-macos-native-ui FLTS_UITEST_CONFIG_DIR=<seeded dir>`):
+- UI tests (`make test-macos-native-ui`, which seeds a library once and runs on
+  a fresh copy each time):
   open a book and flip, Settings, and a tour that asserts the arrow keys still
   page after tapping words, using the word panel and picking a chapter, moves
   the book into a new folder, opens import, Lyrics and Settings, and (with

@@ -46,7 +46,7 @@ final class FLTSUITests: XCTestCase {
 /// result bundle (the runner is sandboxed and cannot write files).
 @MainActor
 final class FLTSScreenshotTour: XCTestCase {
-    private func launch(dir: String, dark: Bool = false, smallest: Bool = false) -> XCUIApplication {
+    private func launch(dir: String, dark: Bool = false, smallest: Bool = false, defaultSize: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment = ["FLTS_CONFIG_DIR": dir, "FLTS_DISABLE_SYNC": "1", "FLTS_DISABLE_KEYRING": "1"]
         // Only the dark launch pins the setting: an argument outranks what the app saves.
@@ -54,6 +54,9 @@ final class FLTSScreenshotTour: XCTestCase {
         if smallest {
             // Below the minimum: the window opens at its smallest allowed size.
             app.launchArguments += ["-NSWindow Frame main-AppWindow-1", "100 450 400 300 0 0 1728 1083 "]
+        } else if defaultSize {
+            // The scene's default size; otherwise AppKit reuses the last saved frame.
+            app.launchArguments += ["-NSWindow Frame main-AppWindow-1", "100 150 1180 800 0 0 1728 1083 "]
         }
         app.launch()
         return app
@@ -103,6 +106,15 @@ final class FLTSScreenshotTour: XCTestCase {
         app.typeKey("w", modifierFlags: [])
         sleep(1)
         shot(window, "2-word-expanded")
+        app.typeKey("w", modifierFlags: [])
+        // A click on empty page space deselects the word.
+        page.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.985)).click()
+        let hint = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Select a word' OR value BEGINSWITH 'Select a word'")).firstMatch
+        XCTAssertTrue(hint.waitForExistence(timeout: 3), "clicking empty space did not deselect")
+        page.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.2)).click()
+        sleep(2)
+        app.typeKey("w", modifierFlags: [])
+        sleep(1)
         app.buttons["Hide word details"].firstMatch.click()
         sleep(1)
         assertFlips(app, "after clicking in the word panel")
@@ -193,6 +205,15 @@ final class FLTSScreenshotTour: XCTestCase {
             app.sheets.firstMatch.buttons["Import"].click()
             let twoChapters = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH '2 chapters' OR value BEGINSWITH '2 chapters'")).firstMatch
             XCTAssertTrue(twoChapters.waitForExistence(timeout: 10), "imported book with the chosen chapters not in the library")
+            // Delete it again: select, ⌫, confirm.
+            let imported = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Cuentos nuevos' OR value CONTAINS 'Cuentos nuevos'")).firstMatch
+            imported.click()
+            app.typeKey(.delete, modifierFlags: [])
+            let confirm = app.windows.firstMatch.descendants(matching: .button).matching(identifier: "Delete").firstMatch
+            XCTAssertTrue(confirm.waitForExistence(timeout: 5), "no delete confirmation")
+            confirm.click()
+            let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: imported)
+            XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 10), .completed, "deleted book still listed")
         } else {
             shot(window, "7-import")
             app.typeKey(.escape, modifierFlags: [])
@@ -283,13 +304,20 @@ final class FLTSScreenshotTour: XCTestCase {
 
         // First launch: onboarding on an empty config dir.
         if let empty = ProcessInfo.processInfo.environment["FLTS_UITEST_EMPTY_DIR"] {
-            let first = launch(dir: empty)
+            let first = launch(dir: empty, defaultSize: true)
             XCTAssertTrue(first.staticTexts["Welcome to FLTS"].waitForExistence(timeout: 15))
             first.buttons["Continue"].click()
             XCTAssertTrue(first.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Paste an API key' OR value BEGINSWITH 'Paste an API key'")).firstMatch
                 .waitForExistence(timeout: 5), "onboarding says nothing about the missing key")
             sleep(1)
             shot(first.windows.firstMatch, "11-onboarding")
+            // Finish it: a key, Return, and the app moves on to the (empty) library.
+            let key = first.secureTextFields.firstMatch
+            key.click()
+            key.typeText("test-key\r")
+            XCTAssertTrue(first.staticTexts.matching(NSPredicate(format: "label == 'Your Library Is Empty' OR value == 'Your Library Is Empty'"))
+                .firstMatch.waitForExistence(timeout: 10), "onboarding did not lead to the library")
+            shot(first.windows.firstMatch, "11-after-onboarding")
             first.terminate()
         }
     }

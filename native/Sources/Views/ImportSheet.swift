@@ -237,19 +237,22 @@ struct OnboardingView: View {
     @State private var tried = false
 
     var body: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "character.book.closed")
-                .font(.system(size: 48))
-                .foregroundStyle(.tint)
-            Text("Welcome to FLTS")
-                .font(.largeTitle.weight(.semibold))
+        VStack(spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "character.book.closed")
+                    .font(.system(size: 34))
+                    .foregroundStyle(.tint)
+                Text("Welcome to FLTS")
+                    .font(.largeTitle.weight(.semibold))
+            }
             Text("Pick the language you read in and a translation provider to get started.")
                 .foregroundStyle(.secondary)
             Form {
-                TranslationSettings()
+                TranslationSettings(essentialsOnly: true)
             }
             .formStyle(.grouped)
-            .frame(maxWidth: 520, maxHeight: 360)
+            // About its content's height, so Continue sits right under the fields.
+            .frame(maxWidth: 520, maxHeight: 290)
             Button("Continue") {
                 // Fields save on Return or losing focus; ending editing commits the last one.
                 NSApp.keyWindow?.makeFirstResponder(nil)
@@ -266,7 +269,7 @@ struct OnboardingView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .padding(40)
+        .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 

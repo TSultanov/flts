@@ -78,6 +78,8 @@ struct CommitField: View {
 }
 
 struct TranslationSettings: View {
+    /// Onboarding shows only what the app needs to start.
+    var essentialsOnly = false
     @Environment(AppModel.self) private var model
 
     var body: some View {
@@ -119,18 +121,20 @@ struct TranslationSettings: View {
                 }
                 ModelPicker(config: config)
             }
-            Section("Performance") {
-                Stepper(
-                    "Parallel translations: \(config.translationConcurrency)",
-                    value: Binding(
-                        get: { config.translationConcurrency },
-                        set: { n in Task { await store.update { $0.translationConcurrency = n } } }), in: 1...16)
-            }
-            if config.translationProvider == .google {
-                Section {
-                    PurgeCachesRow(hasKey: !(config.geminiApiKey ?? "").isEmpty)
-                } footer: {
-                    Text("Gemini keeps prompt caches on Google's servers for a while; this removes them now.")
+            if !essentialsOnly {
+                Section("Performance") {
+                    Stepper(
+                        "Parallel translations: \(config.translationConcurrency)",
+                        value: Binding(
+                            get: { config.translationConcurrency },
+                            set: { n in Task { await store.update { $0.translationConcurrency = n } } }), in: 1...16)
+                }
+                if config.translationProvider == .google {
+                    Section {
+                        PurgeCachesRow(hasKey: !(config.geminiApiKey ?? "").isEmpty)
+                    } footer: {
+                        Text("Gemini keeps prompt caches on Google's servers for a while; this removes them now.")
+                    }
                 }
             }
         } else {

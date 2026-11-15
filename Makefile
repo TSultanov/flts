@@ -72,10 +72,8 @@ test-macos-native: ## run the native app's unit tests
 	cd "$(NATIVE)" && xcodegen generate && xcodebuild -project FLTS.xcodeproj -scheme FLTS \
 		-configuration Debug -derivedDataPath build/DerivedData test -only-testing:FLTSTests
 
-test-macos-native-ui: ## run the native UI tests (needs an unlocked session and FLTS_UITEST_CONFIG_DIR)
-	cd "$(NATIVE)" && xcodegen generate && TEST_RUNNER_FLTS_UITEST_CONFIG_DIR="$(FLTS_UITEST_CONFIG_DIR)" \
-		xcodebuild -project FLTS.xcodeproj -scheme FLTS -configuration Debug \
-		-derivedDataPath build/DerivedData test -only-testing:FLTSUITests
+test-macos-native-ui: ## run the native UI tests on a fresh seeded library (needs an unlocked screen)
+	"$(NATIVE)/scripts/ui-tests.sh"
 
 install-macos-native: build-macos-native ## replace /Applications/FLTS.app with the native app
 	@if pgrep -xq "$(PRODUCT)"; then echo "quit $(PRODUCT) first: both apps share one library"; exit 1; fi

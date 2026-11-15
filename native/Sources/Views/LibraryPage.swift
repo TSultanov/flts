@@ -177,7 +177,9 @@ private struct FolderContents: View {
     var body: some View {
         ForEach(folder.folders) { child in
             DisclosureGroup(isExpanded: binding(for: child.path)) {
+                // A full level in, so a folder's books do not read as top-level ones.
                 FolderContents(folder: child, expanded: $expanded)
+                    .padding(.leading, 20)
             } label: {
                 Label(child.name, systemImage: "folder")
                     .font(.headline)
