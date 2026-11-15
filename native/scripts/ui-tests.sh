@@ -1,7 +1,7 @@
 #!/bin/bash
 # Runs the native UI tests on a fresh copy of a seeded library each time
 # (the tour moves, imports and deletes books). Seeds once into build/.
-# Needs an unlocked, awake screen.
+# QUICK=1 runs only the core library and reader flow. Needs an unlocked, awake screen.
 set -euo pipefail
 NATIVE="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(dirname "$NATIVE")"
@@ -29,6 +29,7 @@ xcodegen generate >/dev/null
 TEST_RUNNER_FLTS_UITEST_CONFIG_DIR="$RUN/library" \
 TEST_RUNNER_FLTS_UITEST_EMPTY_DIR="$RUN/empty" \
 TEST_RUNNER_FLTS_UITEST_EPUB="$NATIVE/scripts/fixtures/import.epub" \
+TEST_RUNNER_FLTS_UITEST_QUICK="${QUICK:-}" \
   xcodebuild -project FLTS.xcodeproj -scheme FLTS -configuration Debug \
     -derivedDataPath build/DerivedData -resultBundlePath "$RUN/result.xcresult" \
     test -only-testing:FLTSUITests

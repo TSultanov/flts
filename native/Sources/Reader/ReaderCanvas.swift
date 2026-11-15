@@ -385,9 +385,9 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
                 .font: font, .foregroundColor: NSColor.controlAccentColor, .paragraphStyle: style,
             ]
             var size = (translation as NSString).size(withAttributes: attrs)
-            // Shrink to the word's width, down to 60%, then let it overflow centered.
+            // Shrink to the word's width, but stay legible, then let it overflow centered.
             if size.width > glyph.width, glyph.width > 0 {
-                let scale = max(glyph.width / size.width, 0.6)
+                let scale = max(glyph.width / size.width, 0.75)
                 let shrunk = NSFont.systemFont(ofSize: font.pointSize * scale)
                 attrs[.font] = shrunk
                 size = (translation as NSString).size(withAttributes: attrs)
@@ -724,7 +724,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
     func go(toPage page: Int, animated: Bool = true) {
         let target = min(max(page, 0), max(text.pages.count - 1, 0))
         guard target != spreadStart else { return }
-        if animated, let layer {
+        if animated, !AppDefaults.animationsOff, let layer {
             let transition = CATransition()
             transition.type = .push
             transition.subtype = target > spreadStart ? .fromRight : .fromLeft
@@ -748,7 +748,10 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         case .rightArrow?, .pageDown?, .downArrow?: nextSpread()
         case .leftArrow?, .pageUp?, .upArrow?: previousSpread()
         case .home?: go(toPage: 0)
-        case .end?: go(toPage: text.pages.count - 1)
+        case .end?:
+            // The last spread in step with the current one, not the last page alone.
+            let last = max(text.pages.count - 1, 0)
+            go(toPage: last >= spreadStart ? spreadStart + (last - spreadStart) / columns * columns : last)
         default:
             let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
             if key == " " {

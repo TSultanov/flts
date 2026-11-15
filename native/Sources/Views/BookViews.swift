@@ -158,7 +158,8 @@ struct BookReaderScreen: View {
             \.bookActions,
             BookActions(
                 translateChapter: translateChapter, toggleWordPanel: { session.controls.toggleWordPanel?() },
-                toggleChapters: toggleChapters, hasChapters: session.book.chapters.count > 1))
+                toggleChapters: toggleChapters, hasChapters: session.book.chapters.count > 1,
+                chaptersShown: session.controls.chaptersShown, wordDetailsShown: wordExpanded))
         .onChange(of: model.config.targetLanguage?.id) { _, id in
             session.word.targetLanguage = id ?? ""
         }

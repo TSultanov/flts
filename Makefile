@@ -30,7 +30,7 @@ IOS_IPA := $(TAURI_DIR)/gen/apple/build/arm64/$(PRODUCT).ipa
 .PHONY: all build dev deps check-deps hooks format \
 	build-macos build-ios build-android \
 	install-macos install-ios install-android \
-	build-macos-native install-macos-native test-macos-native test-macos-native-ui \
+	build-macos-native install-macos-native test-macos-native test-macos-native-ui test-macos-native-ui-quick \
 	install\ macos install\ ios install\ android \
 	help
 
@@ -72,8 +72,11 @@ test-macos-native: ## run the native app's unit tests
 	cd "$(NATIVE)" && xcodegen generate && xcodebuild -project FLTS.xcodeproj -scheme FLTS \
 		-configuration Debug -derivedDataPath build/DerivedData test -only-testing:FLTSTests
 
-test-macos-native-ui: ## run the native UI tests on a fresh seeded library (needs an unlocked screen)
+test-macos-native-ui: ## run the full native UI tour on a fresh seeded library (needs an unlocked screen)
 	"$(NATIVE)/scripts/ui-tests.sh"
+
+test-macos-native-ui-quick: ## the core library and reader flow only, for routine runs
+	QUICK=1 "$(NATIVE)/scripts/ui-tests.sh"
 
 install-macos-native: build-macos-native ## replace /Applications/FLTS.app with the native app
 	@if pgrep -xq "$(PRODUCT)"; then echo "quit $(PRODUCT) first: both apps share one library"; exit 1; fi

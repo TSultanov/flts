@@ -116,15 +116,20 @@ on) it lands on the right page of that paragraph.
   fetches).
 - Reader selection: drag selects (Copy, ⌘C, Look Up); a click without a drag
   taps the word. Tested with synthesized mouse events.
-- UI tests (`make test-macos-native-ui`, about a minute; it seeds a library
-  once and runs on a fresh copy each time): one tour that asserts the arrow
+- UI tests (`make test-macos-native-ui`, about 50 s plus the build; it seeds a
+  library once and runs on a fresh copy each time;
+  `make test-macos-native-ui-quick` stops after the library and reader checks,
+  about 20 s): one tour that asserts the arrow
   keys still page after tapping words, using the word panel and picking a
   chapter, moves a book into a new folder, imports an EPUB and deletes it,
   opens Lyrics and Settings, quits and relaunches in dark mode, drives the
   smallest window from the keyboard, and on an empty config dir finishes
   onboarding and imports a pasted text. Its screenshots are
   attachments in the result bundle. It needs an unlocked session, and waits by
-  polling, since XCTest's own waits re-check only once a second. The window
+  polling, since XCTest's own waits re-check only once a second. The app runs
+  with `FLTS_NO_ANIMATIONS`, since the runner waits out every animation. The
+  tour also asserts that showing the chapters does not resize the reader, and
+  `FLTS_UITEST_STRESS_DIR` enables a 60-launch stress test. The window
   size comes from `FLTS_WINDOW_SIZE`, which the app applies itself: a frame
   pinned by a launch argument made it die at launch in AppKit's toolbar layout.
 - Reading position holds across a resize round trip and ten sidebar toggles

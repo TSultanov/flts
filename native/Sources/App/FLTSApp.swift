@@ -13,6 +13,7 @@ struct FLTSApp: App {
             RootView()
                 .environment(delegate.model)
                 .frame(minWidth: 720, minHeight: 480)
+                .transaction { if AppDefaults.animationsOff { $0.disablesAnimations = true } }
         }
         .defaultSize(width: 1180, height: 800)
         .commands { AppCommands(model: delegate.model) }
@@ -97,6 +98,8 @@ struct AppCommands: Commands {
                 .keyboardShortcut("o")
                 // Not during onboarding, where nothing can present the sheet.
                 .disabled(!model.config.isConfigured)
+            Divider()
+            Button("Reveal Library in Finder") { Platform.revealLibrary(model.config.libraryRoot) }
         }
         CommandGroup(after: .sidebar) {
             Button("Larger Text") { ReaderPreferences.shared.fontSize += 1 }
@@ -118,19 +121,16 @@ struct AppCommands: Commands {
             Button("Translate Chapter") { book?.translateChapter() }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
                 .disabled(book == nil)
-            Button("Show Chapters") { book?.toggleChapters() }
+            Button(book?.chaptersShown == true ? "Hide Chapters" : "Show Chapters") { book?.toggleChapters() }
                 .keyboardShortcut("c", modifiers: [.command, .control])
                 .disabled(book?.hasChapters != true)
-            Button("Show Word Details") { book?.toggleWordPanel() }
+            Button(book?.wordDetailsShown == true ? "Hide Word Details" : "Show Word Details") { book?.toggleWordPanel() }
                 .keyboardShortcut("w", modifiers: [.command, .control])
                 .disabled(book == nil)
             Divider()
             Button("Library") { model.selectedBookId = nil }
                 .keyboardShortcut("l", modifiers: [.command, .option])
                 .disabled(book == nil)
-        }
-        CommandGroup(after: .help) {
-            Button("Reveal Library in Finder") { Platform.revealLibrary(model.config.libraryRoot) }
         }
     }
 }
@@ -140,6 +140,8 @@ struct BookActions {
     let toggleWordPanel: () -> Void
     let toggleChapters: () -> Void
     let hasChapters: Bool
+    var chaptersShown = false
+    var wordDetailsShown = false
 }
 
 extension FocusedValues {

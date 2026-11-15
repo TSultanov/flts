@@ -31,12 +31,16 @@ final class FLTSScreenshotTour: XCTestCase {
         // Set by the app itself, so the run does not depend on the last saved
         // frame. Below the minimum, the window gets its smallest allowed size.
         app.launchEnvironment["FLTS_WINDOW_SIZE"] = smallest ? "400x300" : "1180x800"
+        // No animations, in the app or of its windows and sheets: the runner
+        // waits for the app to settle after each one.
+        app.launchEnvironment["FLTS_NO_ANIMATIONS"] = "1"
+        app.launchArguments += ["-NSAutomaticWindowAnimationsEnabled", "NO", "-NSWindowResizeTime", "0.001"]
         app.launch()
         return app
     }
 
     /// Lets an animation or a layout pass finish; waits on state use expectations.
-    private func pause(_ seconds: Double = 0.2) {
+    private func pause(_ seconds: Double = 0.05) {
         Thread.sleep(forTimeInterval: seconds)
     }
 
@@ -93,7 +97,7 @@ final class FLTSScreenshotTour: XCTestCase {
         book.doubleClick()
         let page = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Page'")).firstMatch
         XCTAssertTrue(page.appears(timeout: 10))
-        pause(0.4)
+        pause(0.15)
         page.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.12)).click()
         pause()
         page.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.2)).click()
@@ -110,7 +114,7 @@ final class FLTSScreenshotTour: XCTestCase {
         let hint = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Select a word' OR value BEGINSWITH 'Select a word'")).firstMatch
         XCTAssertTrue(hint.appears(timeout: 3), "clicking empty space did not deselect")
         // Past the double-click interval, or the next click selects by word.
-        pause(0.4)
+        pause(0.15)
         page.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.2)).click()
         waitWord(app)
         assertFlips(app, "after tapping words")
@@ -149,8 +153,8 @@ final class FLTSScreenshotTour: XCTestCase {
         XCTAssertTrue(sheet.appears(timeout: 5))
         sheet.textFields.firstMatch.click()
         sheet.typeText("Cuentos")
-        sheet.buttons["Move"].click()
-        pause(0.4)
+        app.typeKey(.return, modifierFlags: [])  // the default button
+        pause(0.15)
         let folder = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'Cuentos' OR title == 'Cuentos' OR value == 'Cuentos'")).firstMatch
         XCTAssertTrue(folder.appears(timeout: 5), "folder row after moving the book")
         app.disclosureTriangles.firstMatch.click()
@@ -162,10 +166,16 @@ final class FLTSScreenshotTour: XCTestCase {
         XCTAssertTrue(epub.appears(timeout: 5), "the multi-chapter fixture book is missing")
         do {
             epub.doubleClick()
-            pause(0.4)
+            pause(0.15)
             XCTAssertFalse(app.outlines.firstMatch.exists, "chapter list should start hidden")
+            // The list goes over the page: the reader must keep its size, so its
+            // text is not laid out again (that was the stutter).
+            let chapterPage = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Page'")).firstMatch
+            XCTAssertTrue(chapterPage.appears(timeout: 5))
+            let readerFrame = chapterPage.frame
             app.typeKey("c", modifierFlags: [])
             XCTAssertTrue(app.outlines.firstMatch.appears(timeout: 3), "C did not show the chapters")
+            XCTAssertEqual(chapterPage.frame, readerFrame, "showing the chapters resized the reader")
             pause()
             shot(window, "3-chapters")
             // By position: over the reader, XCTest's own hit check does not see the row.
@@ -180,7 +190,7 @@ final class FLTSScreenshotTour: XCTestCase {
             app.typeKey("c", modifierFlags: [])
             XCTAssertTrue(app.outlines.firstMatch.appears(timeout: 3), "C ignored after picking a chapter")
             app.typeKey("c", modifierFlags: [])
-            app.buttons["Library"].firstMatch.click()
+            app.typeKey("l", modifierFlags: [.command, .option])  // Book › Library
             pause()
         }
 
@@ -196,12 +206,17 @@ final class FLTSScreenshotTour: XCTestCase {
         shot(window, "5-selection-bar")
         app.typeKey(.escape, modifierFlags: [])
 
+        // The quick run stops here: library, reader, word panel, chapters and
+        // folders are covered; import, Lyrics, Settings, dark mode, the smallest
+        // window and onboarding are the full run's.
+        if ProcessInfo.processInfo.environment["FLTS_UITEST_QUICK"]?.isEmpty == false { return }
+
         app.typeKey("o", modifierFlags: .command)
-        pause(0.4)
+        pause(0.15)
         if let epubFile = ProcessInfo.processInfo.environment["FLTS_UITEST_EPUB"] {
             // Pick the file through the open panel, then skip one chapter.
             app.buttons["Choose EPUB…"].firstMatch.click()
-            pause(0.4)
+            pause(0.15)
             app.typeKey("g", modifierFlags: [.command, .shift])
             pause()
             app.typeText(epubFile + "\r")
@@ -212,7 +227,7 @@ final class FLTSScreenshotTour: XCTestCase {
             boxes.element(boundBy: 0).click()
             pause()
             shot(window, "7-import")
-            app.sheets.firstMatch.buttons["Import"].click()
+            app.typeKey(.return, modifierFlags: [])  // the default button
             let twoChapters = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH '2 chapters' OR value BEGINSWITH '2 chapters'")).firstMatch
             XCTAssertTrue(twoChapters.appears(timeout: 10), "imported book with the chosen chapters not in the library")
             // Delete it again: select, ⌫, confirm.
@@ -234,10 +249,10 @@ final class FLTSScreenshotTour: XCTestCase {
         XCTAssertTrue(lyrics.appears(timeout: 5))
         pause(1)
         shot(lyrics, "8-lyrics")
-        lyrics.buttons[XCUIIdentifierCloseWindow].click()
+        app.typeKey("w", modifierFlags: .command)
 
         app.typeKey(",", modifierFlags: .command)
-        pause(0.4)
+        pause(0.15)
         // The Appearance picker, clicked for real.
         app.toolbars.buttons["Reading"].firstMatch.click()
         pause()
@@ -268,7 +283,7 @@ final class FLTSScreenshotTour: XCTestCase {
         darkBook.doubleClick()
         let darkPage = dark.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Page'")).firstMatch
         XCTAssertTrue(darkPage.appears(timeout: 10))
-        pause(0.4)
+        pause(0.15)
         darkPage.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.12)).click()
         pause()
         dark.typeKey("w", modifierFlags: [])
@@ -277,9 +292,9 @@ final class FLTSScreenshotTour: XCTestCase {
         dark.typeKey("l", modifierFlags: [.command, .shift])
         let darkLyrics = dark.windows["Lyrics"]
         if darkLyrics.appears(timeout: 5) {
-            pause(0.4)
+            pause(0.15)
             shot(darkLyrics, "10-dark-lyrics")
-            darkLyrics.buttons[XCUIIdentifierCloseWindow].click()
+            dark.typeKey("w", modifierFlags: .command)
         }
         dark.terminate()
 
@@ -288,7 +303,7 @@ final class FLTSScreenshotTour: XCTestCase {
         let small = launch(dir: dir, smallest: true)
         let smallWindow = small.windows.firstMatch
         XCTAssertTrue(smallWindow.appears(timeout: 15))
-        pause(0.4)
+        pause(0.15)
         shot(smallWindow, "12-min-library")
         small.typeKey(.downArrow, modifierFlags: [])
         small.typeKey(.downArrow, modifierFlags: [])
@@ -297,7 +312,7 @@ final class FLTSScreenshotTour: XCTestCase {
         small.typeKey(.return, modifierFlags: [])
         let smallPage = small.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Page'")).firstMatch
         XCTAssertTrue(smallPage.appears(timeout: 10), "arrows and Return did not open a book")
-        pause(0.4)
+        pause(0.15)
         smallPage.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.15)).click()
         pause()
         small.typeKey("w", modifierFlags: [])

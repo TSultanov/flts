@@ -122,10 +122,8 @@ private struct StatusLine: View {
                 .font(.caption).foregroundStyle(.secondary).padding(6)
         case .failed(let message):
             // Provider errors can be pages of JSON; the full text is in the tooltip.
-            Text("Error: \(message)")
+            Label("Translation failed", systemImage: "exclamationmark.triangle")
                 .font(.caption).foregroundStyle(.red).padding(6)
-                .lineLimit(2)
-                .truncationMode(.tail)
                 .help(message)
         default:
             EmptyView()
@@ -141,8 +139,8 @@ private struct TranslationBadge: View {
         case .idle: EmptyView()
         case .translating: ProgressView().controlSize(.small).help("Translating lyrics…")
         case .done: Image(systemName: "checkmark.circle").foregroundStyle(.green).help("Translated")
-        case .failed(let message):
-            Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange).help(message)
+        // Said once, in words, under the lyrics.
+        case .failed: EmptyView()
         }
     }
 }
