@@ -18,12 +18,14 @@ struct ChaptersList: View {
 
     var body: some View {
         let book = session.book
+        ScrollViewReader { proxy in
         List(selection: $highlighted) {
             ForEach(book.chapters) { chapter in
                 ChapterRow(
-                    chapter: chapter, summaryReady: summaryReady(chapter.id),
+                    chapter: chapter, isCurrent: chapter.id == book.currentChapter, summaryReady: summaryReady(chapter.id),
                     summarizing: book.summary?.activelyGenerating == chapter.id)
                     .tag(chapter.id)
+                    .id(chapter.id)
                     .contentShape(Rectangle())
                     .simultaneousGesture(TapGesture().onEnded { open(chapter.id) })
             }
@@ -31,6 +33,8 @@ struct ChaptersList: View {
         .focused($focused)
         .onAppear {
             highlighted = book.currentChapter
+            // A long book opens its list at the chapter being read.
+            if let current = book.currentChapter { proxy.scrollTo(current, anchor: .center) }
             // The list takes the keys while it is up: arrows move, Return opens.
             Task {
                 try? await Task.sleep(for: .milliseconds(120))
@@ -56,6 +60,7 @@ struct ChaptersList: View {
                 Text("No chapters").foregroundStyle(.secondary)
             }
         }
+        }
     }
 
     private func summaryReady(_ chapter: Int) -> Bool? {
@@ -66,6 +71,8 @@ struct ChaptersList: View {
 
 private struct ChapterRow: View {
     let chapter: ChapterMeta
+    /// Marked in the row itself: an iOS list shows no selection outside edit mode.
+    let isCurrent: Bool
     let summaryReady: Bool?
     let summarizing: Bool
 
@@ -73,7 +80,8 @@ private struct ChapterRow: View {
         HStack(spacing: 8) {
             Text(chapter.title.isEmpty ? "<no title>" : chapter.title)
                 .lineLimit(2)
-                .foregroundStyle(summaryReady == false ? .secondary : .primary)
+                .fontWeight(isCurrent ? .semibold : .regular)
+                .foregroundStyle(isCurrent ? AnyShapeStyle(.tint) : AnyShapeStyle(summaryReady == false ? .secondary : .primary))
             Spacer(minLength: 4)
             if summarizing {
                 ProgressView()
@@ -155,19 +163,26 @@ struct BookReaderScreen: View {
         .bookTitle(model.library.book(session.book.bookId)?.title ?? "", chapter: chapterTitle)
         .toolbar { toolbar }
         #if os(iOS)
-        .background { ReaderKeys(controls: session.controls) }
+        .onAppear { model.activeReader = session.controls }
+        .onDisappear {
+            model.activeReader = nil
+            model.activeBook = nil
+        }
+        .onChange(of: bookActions, initial: true) { _, actions in model.activeBook = actions }
         #endif
         .focusedSceneValue(\.readerControls, session.controls)
-        .focusedSceneValue(
-            \.bookActions,
-            BookActions(
-                translateChapter: translateChapter, toggleWordPanel: { session.controls.toggleWordPanel?() },
-                toggleChapters: toggleChapters, hasChapters: session.book.chapters.count > 1,
-                chaptersShown: session.controls.chaptersShown, wordDetailsShown: wordExpanded))
+        .focusedSceneValue(\.bookActions, bookActions)
         .onChange(of: model.config.targetLanguage?.id) { _, id in
             session.word.targetLanguage = id ?? ""
         }
         .onAppear { session.word.targetLanguage = model.config.config?.targetLanguageId ?? "" }
+    }
+
+    private var bookActions: BookActions {
+        BookActions(
+            translateChapter: translateChapter, toggleWordPanel: { session.controls.toggleWordPanel?() },
+            toggleChapters: toggleChapters, hasChapters: session.book.chapters.count > 1,
+            chaptersShown: session.controls.chaptersShown, wordDetailsShown: wordExpanded)
     }
 
     private struct ChapterIdentity: Hashable {
@@ -258,40 +273,6 @@ private struct ReadingMenu: View {
         }
         // Stays open while the size is stepped.
         .menuActionDismissBehavior(.disabled)
-    }
-}
-#endif
-
-#if os(iOS)
-/// A hardware keyboard's reader keys, as shortcuts on invisible buttons, so
-/// nothing has to hold keyboard focus.
-private struct ReaderKeys: View {
-    let controls: ReaderControls
-
-    var body: some View {
-        Group {
-            key(.rightArrow) { controls.next() }
-            key(.downArrow) { controls.next() }
-            key(.pageDown) { controls.next() }
-            key(.space) { controls.next() }
-            key(.leftArrow) { controls.previous() }
-            key(.upArrow) { controls.previous() }
-            key(.pageUp) { controls.previous() }
-            key(.space, .shift) { controls.previous() }
-            key(.home) { controls.first() }
-            key(.end) { controls.last() }
-            key("w") { controls.toggleWordPanel?() }
-            key("c") { controls.toggleChapters?() }
-            key(.escape) {
-                if controls.chaptersShown { controls.hideChapters?() } else { _ = controls.collapseWordPanel?() }
-            }
-        }
-        .opacity(0)
-        .accessibilityHidden(true)
-    }
-
-    private func key(_ key: KeyEquivalent, _ modifiers: EventModifiers = [], _ action: @escaping () -> Void) -> some View {
-        Button("", action: action).keyboardShortcut(key, modifiers: modifiers)
     }
 }
 #endif

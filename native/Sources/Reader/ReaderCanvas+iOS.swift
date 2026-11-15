@@ -4,9 +4,10 @@ import UIKit
 /// The reader's touch input: tap, swipe, long press, a hardware keyboard, and
 /// VoiceOver. What they do lives in `ReaderCanvas`.
 extension ReaderCanvas: @preconcurrency UIEditMenuInteractionDelegate {
-    private final class TouchState {
+    @MainActor private final class TouchState {
         var editMenu: UIEditMenuInteraction?
         var menuHit: ChapterTextLayout.Hit?
+        let noKeyboard = UIView(frame: .zero)
     }
 
     private var touch: TouchState {
@@ -42,10 +43,15 @@ extension ReaderCanvas: @preconcurrency UIEditMenuInteractionDelegate {
     /// A finger needs about 44 pt; the button is drawn 22 pt wide.
     var controlSlop: CGFloat { 11 }
 
-    /// Not a first responder on iOS: as one, the reader made the software
-    /// keyboard come up whenever a menu opened. A hardware keyboard's keys
-    /// are handled by the reader screen instead (`ReaderKeys`).
-    func takeKeys() {}
+    /// The reader takes the keys, for a hardware keyboard's arrows, Space, W
+    /// and C. With an empty input view: as first responder without one, the
+    /// software keyboard came up whenever a menu opened.
+    override var canBecomeFirstResponder: Bool { true }
+    override var inputView: UIView? { touch.noKeyboard }
+
+    func takeKeys() {
+        becomeFirstResponder()
+    }
 
     func controlsMoved() {}
 
@@ -72,6 +78,7 @@ extension ReaderCanvas: @preconcurrency UIEditMenuInteractionDelegate {
     // MARK: Touch
 
     @objc private func tapped(_ gesture: UITapGestureRecognizer) {
+        takeKeys()
         let point = gesture.location(in: self)
         if activateControl(at: point, fresh: false) { return }
         // A finger is not a pointer: a tap just beside a word still means the word.
@@ -81,7 +88,7 @@ extension ReaderCanvas: @preconcurrency UIEditMenuInteractionDelegate {
         }
         // In the margins (not over text), a tap turns the page, as in other readers.
         if point.x > bounds.width - margins.right { return nextSpread() }
-        if point.x < margins.left - 2 * controlSlop - 22, selected == nil { return previousSpread() }
+        if point.x < margins.left - 2 * controlSlop - 22 { return previousSpread() }
         selectWord(at: point)
     }
 
@@ -164,6 +171,35 @@ extension ReaderCanvas: @preconcurrency UIEditMenuInteractionDelegate {
             }
             responder = next
         }
+    }
+
+    // MARK: Keyboard
+
+    override var keyCommands: [UIKeyCommand]? {
+        func command(_ input: String, _ action: Selector, _ modifiers: UIKeyModifierFlags = []) -> UIKeyCommand {
+            let command = UIKeyCommand(input: input, modifierFlags: modifiers, action: action)
+            command.wantsPriorityOverSystemBehavior = true
+            return command
+        }
+        return [
+            command(UIKeyCommand.inputRightArrow, #selector(keyNext)), command(UIKeyCommand.inputDownArrow, #selector(keyNext)),
+            command(UIKeyCommand.inputPageDown, #selector(keyNext)), command(" ", #selector(keyNext)),
+            command(UIKeyCommand.inputLeftArrow, #selector(keyPrevious)), command(UIKeyCommand.inputUpArrow, #selector(keyPrevious)),
+            command(UIKeyCommand.inputPageUp, #selector(keyPrevious)), command(" ", #selector(keyPrevious), .shift),
+            command(UIKeyCommand.inputHome, #selector(keyFirst)), command(UIKeyCommand.inputEnd, #selector(keyLast)),
+            command("w", #selector(keyToggle(_:))), command("c", #selector(keyToggle(_:))),
+            command(UIKeyCommand.inputEscape, #selector(keyToggle(_:))),
+        ]
+    }
+
+    @objc private func keyNext() { nextSpread() }
+    @objc private func keyPrevious() { previousSpread() }
+    @objc private func keyFirst() { go(toPage: 0) }
+    @objc private func keyLast() { go(toPage: text.pages.count - 1) }
+
+    @objc private func keyToggle(_ command: UIKeyCommand) {
+        let key = command.input == UIKeyCommand.inputEscape ? "\u{1b}" : (command.input ?? "")
+        _ = delegate?.readerToggle(self, key: key)
     }
 
     // MARK: Accessibility

@@ -345,6 +345,17 @@ struct ReadingSettings: View {
 struct AnkiSettings: View {
     @Environment(AppModel.self) private var model
 
+    #if os(macOS)
+    private static let addressExample = "http://127.0.0.1:8765"
+    private static let explanation: LocalizedStringKey =
+        "Cards sync to Anki desktop through the [AnkiConnect](https://ankiweb.net/shared/info/2055492159) add-on, every 5 minutes while FLTS runs."
+    #else
+    // Anki runs on a computer; this device reaches it over the network.
+    private static let addressExample = "http://192.168.1.10:8765"
+    private static let explanation: LocalizedStringKey =
+        "Cards sync to Anki on your computer through the [AnkiConnect](https://ankiweb.net/shared/info/2055492159) add-on, every 5 minutes while FLTS runs. Enter the computer's address on your network, and let AnkiConnect accept connections from other devices."
+    #endif
+
     var body: some View {
         let store = model.config
         if let config = store.config {
@@ -356,7 +367,7 @@ struct AnkiSettings: View {
                         set: { on in Task { await store.update { $0.ankiSyncEnabled = on } } }))
                 CommitField(
                     title: "AnkiConnect address", value: config.ankiEndpoint ?? "",
-                    prompt: "http://127.0.0.1:8765"
+                    prompt: Self.addressExample
                 ) { v in
                     Task { await store.update { $0.ankiEndpoint = v.isEmpty ? nil : v } }
                 }
@@ -364,7 +375,7 @@ struct AnkiSettings: View {
                     Task { await store.update { $0.ankiApiKey = v.isEmpty ? nil : v } }
                 }
             } footer: {
-                Text("Cards sync to Anki desktop through the [AnkiConnect](https://ankiweb.net/shared/info/2055492159) add-on, every 5 minutes while FLTS runs.")
+                Text(Self.explanation)
             }
             Section("Status") {
                 AnkiStatusRow()

@@ -94,6 +94,23 @@ final class FLTSiOSTour: XCTestCase {
         let translate = app.buttons["Translate Chapter"].firstMatch
         XCTAssertTrue(translate.appears(timeout: 5), "no Translate Chapter on an untranslated text")
         XCTAssertTrue(until(10) { translate.isEnabled }, "Translate Chapter stayed disabled")
+        XCTAssertTrue(until(20) { page.label.contains(" of ") })
+
+        // The first paragraph's own button, in the gutter beside its first line:
+        // drawn 22 pt wide, it must take a finger a little off its centre.
+        let compact = page.frame.width < 600 || page.frame.height < 500
+        let gutter = CGVector(dx: (compact ? 40 : 56) - 21 + 9, dy: (compact ? 20 : 40) + 17 + 8)
+        page.coordinate(withNormalizedOffset: .zero).withOffset(gutter).tap()
+        let firstLine = page.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: (compact ? 40 : 56) + 70, dy: (compact ? 20 : 40) + 18))
+        let wordButton = app.buttons["Show word details"].firstMatch
+        var translatedOne = false
+        for _ in 0..<20 where !translatedOne {
+            firstLine.tap()
+            translatedOne = until(1) { wordButton.exists && wordButton.isEnabled }
+        }
+        XCTAssertTrue(translatedOne, "the paragraph's own translate button did not translate it")
+        XCTAssertTrue(translate.exists, "the rest of the chapter should still be untranslated")
+        shot(app, "t-1-one-paragraph")
         translate.tap()
         XCTAssertTrue(until(40) { !translate.exists }, "the chapter was not translated")
         shot(app, "t-1-translated")
@@ -154,6 +171,78 @@ final class FLTSiOSTour: XCTestCase {
         app.terminate()
     }
 
+    /// The path a real device takes: no test folder, so the app uses its own
+    /// container and standard defaults. Stage 1 (a fresh install) goes through
+    /// onboarding; the script then puts a library where the Tauri app keeps
+    /// its own; stage 2 must find it.
+    func testOwnContainer() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let stage = env["FLTS_UITEST_CONTAINER_STAGE"], !stage.isEmpty else { throw XCTSkip("container check only") }
+        let app = XCUIApplication()
+        app.launchEnvironment = ["FLTS_GEMINI_BASE_URL": "http://127.0.0.1:9/"]
+        app.launch()
+        if stage == "1" {
+            XCTAssertTrue(app.staticTexts["Welcome to FLTS"].firstMatch.appears(timeout: 40), "a fresh install did not start with onboarding")
+            let key = app.secureTextFields.firstMatch
+            XCTAssertTrue(key.appears(timeout: 5))
+            key.tap()
+            key.typeText("test-key\n")
+            let empty = app.staticTexts["Your Library Is Empty"].firstMatch
+            if !empty.appears(timeout: 3) { app.buttons["Continue"].firstMatch.tap() }
+            XCTAssertTrue(empty.appears(timeout: 15), "onboarding did not lead to the library")
+            shot(app, "c-1-fresh")
+        } else {
+            XCTAssertTrue(app.staticTexts["Lluvia en la ciudad"].firstMatch.appears(timeout: 40), "the library placed in the container was not found")
+            XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Cuentos breves'")).firstMatch.exists)
+            shot(app, "c-2-existing-data")
+            app.staticTexts["Lluvia en la ciudad"].firstMatch.tap()
+            let page = page(app)
+            XCTAssertTrue(page.appears(timeout: 15), "a book from the existing data did not open")
+        }
+        app.terminate()
+    }
+
+    /// A copy of a real library (`FLTS_UITEST_REAL_DIR`), with the translation
+    /// service pointed nowhere: it lists, a book opens, a word shows its details.
+    func testRealLibraryCopy() throws {
+        guard let dir = ProcessInfo.processInfo.environment["FLTS_UITEST_REAL_DIR"], !dir.isEmpty else {
+            throw XCTSkip("real library copy only")
+        }
+        let app = launch(dir: dir, env: ["FLTS_GEMINI_BASE_URL": "http://127.0.0.1:9/"])
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'chapter'")).firstMatch.appears(timeout: 40),
+            "the library did not list any book")
+        pause(0.5)
+        shot(app, "r-0-library")
+        // The most translated book: its row says "100% translated" or names no share.
+        let rows = app.staticTexts.matching(NSPredicate(format: "label MATCHES '.*chapters? · (9[0-9]|100)% translated' OR label MATCHES '[0-9]+ chapters'"))
+        XCTAssertTrue(rows.firstMatch.appears(timeout: 5), "no well-translated book to open")
+        rows.firstMatch.tap()
+        let page = page(app)
+        XCTAssertTrue(page.appears(timeout: 30), "the book did not open")
+        XCTAssertTrue(until(90) { page.label.contains(" of ") }, "the chapter never finished laying out")
+        pause(0.5)
+        shot(app, "r-1-reader")
+        let details = app.buttons["Show word details"].firstMatch
+        var found = false
+        for step in 0..<24 where !found {
+            page.coordinate(withNormalizedOffset: CGVector(dx: 0.2 + 0.15 * Double(step % 4), dy: 0.1 + 0.05 * Double(step / 4))).tap()
+            found = until(1.5) { details.exists && details.isEnabled }
+        }
+        XCTAssertTrue(found, "no translated word could be opened on this page")
+        shot(app, "r-2-word")
+        details.tap()
+        XCTAssertTrue(app.buttons["Hide word details"].firstMatch.appears(timeout: 5))
+        pause(0.5)
+        shot(app, "r-3-word-details")
+        app.buttons["Hide word details"].firstMatch.tap()
+        if app.buttons["Chapters"].firstMatch.exists {
+            app.buttons["Chapters"].firstMatch.tap()
+            pause(0.8)
+            shot(app, "r-4-chapters")
+        }
+        app.terminate()
+    }
+
     /// Sync with the real engine inside the iOS build, kept to this machine:
     /// it comes online with a pairing code, and turns off again.
     func testSyncLocalEngine() throws {
@@ -208,6 +297,29 @@ final class FLTSiOSTour: XCTestCase {
         XCTAssertTrue(found, "no translated word could be selected")
         shot(app, "2-word")
         XCTAssertTrue(app.buttons["Show system dictionary"].firstMatch.exists, "no system dictionary button")
+
+        // A hardware keyboard's arrow keys page too.
+        let keyed = page.label
+        shot(app, "3-pre-keys")
+        app.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertTrue(until(3) { page.label != keyed }, "the right arrow key did not turn the page")
+        app.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertTrue(until(3) { page.label == keyed }, "the left arrow key did not turn back")
+
+        // A long press on the text opens the word's menu; lifting the finger must
+        // not also count as a tap (the selection stays as it was).
+        let selectedWord = app.staticTexts.matching(NSPredicate(format: "label == 'sleeps' OR label == 'table' OR label == 'the'")).firstMatch
+        let barBefore = selectedWord.exists ? selectedWord.label : ""
+        page.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.3)).press(forDuration: 0.9)
+        let copySentence = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'Copy Sentence'")).firstMatch
+        pause(0.8)
+        shot(app, "2-long-press")
+        XCTAssertTrue(copySentence.appears(timeout: 5), "a long press did not open the reader's menu")
+        copySentence.tap()
+        pause()
+        if !barBefore.isEmpty {
+            XCTAssertTrue(app.staticTexts[barBefore].firstMatch.exists, "the long press changed the selected word")
+        }
         details.tap()
         XCTAssertTrue(app.buttons["Hide word details"].firstMatch.appears(timeout: 3), "the word's details did not open")
         pause()
@@ -242,12 +354,12 @@ final class FLTSiOSTour: XCTestCase {
         page.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.97)).tap()
         XCTAssertTrue(until(10) { page.label == sized }, "the default size did not come back: \(sized) → \(page.label)")
 
-        // A hardware keyboard's arrow keys page too.
-        let keyed = page.label
+        // The keys still work after the long-press and reading menus.
+        let rekeyed = page.label
         app.typeKey(.rightArrow, modifierFlags: [])
-        XCTAssertTrue(until(3) { page.label != keyed }, "the right arrow key did not turn the page")
+        XCTAssertTrue(until(3) { page.label != rekeyed }, "the arrow keys stopped working after a menu")
         app.typeKey(.leftArrow, modifierFlags: [])
-        XCTAssertTrue(until(3) { page.label == keyed }, "the left arrow key did not turn back")
+        XCTAssertTrue(until(3) { page.label == rekeyed })
 
         // One swipe turns one spread, either way.
         let before = page.label
@@ -321,12 +433,17 @@ final class FLTSiOSTour: XCTestCase {
         XCTAssertTrue(darkBook.appears(timeout: 30))
         dark.buttons["Edit"].firstMatch.tap()
         darkBook.tap()
+        // One book is enough for the bar while editing.
+        XCTAssertTrue(dark.staticTexts.matching(NSPredicate(format: "label == '1 selected'")).firstMatch.appears(timeout: 5),
+            "no selection bar for one book in edit mode")
         dark.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Cuentos breves'")).firstMatch.tap()
         XCTAssertTrue(dark.staticTexts.matching(NSPredicate(format: "label ENDSWITH ' selected'")).firstMatch.appears(timeout: 5),
             "no selection bar for several books")
         pause()
         shot(dark, "14-dark-selection")
         dark.buttons["Done"].firstMatch.tap()
+        XCTAssertTrue(until(5) { !dark.staticTexts.matching(NSPredicate(format: "label ENDSWITH ' selected'")).firstMatch.exists },
+            "the selection bar outlived edit mode")
         darkBook.tap()
         let darkPage = self.page(dark)
         XCTAssertTrue(darkPage.appears(timeout: 15))

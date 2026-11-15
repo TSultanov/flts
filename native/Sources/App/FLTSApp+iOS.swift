@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import UIKit
 
 @main
 struct FLTSApp: App {
@@ -27,6 +28,41 @@ struct FLTSApp: App {
                 model.sync.wake()
                 Task { await model.activity.reconcile() }
             }
+        }
+        .commands { ReaderCommands(model: model) }
+    }
+}
+
+/// The ⌘ shortcuts of a hardware keyboard (and the iPad's menu bar).
+private struct ReaderCommands: Commands {
+    let model: AppModel
+    private var reader: ReaderControls? { model.activeReader }
+    private var book: BookActions? { model.activeBook }
+    private let prefs = ReaderPreferences.shared
+
+    var body: some Commands {
+        CommandMenu("Book") {
+            Group {
+                Button("Translate Chapter") { book?.translateChapter() }.keyboardShortcut("t", modifiers: [.command, .shift])
+                Button(book?.wordDetailsShown == true ? "Hide Word Details" : "Show Word Details") { book?.toggleWordPanel() }
+                    .keyboardShortcut("w", modifiers: [.command, .control])
+                Button(book?.chaptersShown == true ? "Hide Chapters" : "Show Chapters") { book?.toggleChapters() }
+                    .keyboardShortcut("c", modifiers: [.command, .control])
+                    .disabled(book?.hasChapters != true)
+                Button("Library") { model.selectedBookId = nil }.keyboardShortcut("l", modifiers: [.command, .option])
+            }
+            .disabled(book == nil)
+            Divider()
+            Button("Larger Text") { prefs.fontSize += 1 }.keyboardShortcut("+")
+            Button("Smaller Text") { prefs.fontSize -= 1 }.keyboardShortcut("-")
+            Button("Default Text Size") { prefs.fontSize = ReaderPreferences.defaultFontSize }.keyboardShortcut("0")
+            Divider()
+            Button("Import Book…") { model.showImport = true }
+                .keyboardShortcut("o")
+                .disabled(!model.config.isConfigured || model.selectedBookId != nil)
+            Button("Settings…") { model.showSettings = true }
+                .keyboardShortcut(",")
+                .disabled(!model.config.isConfigured || model.selectedBookId != nil)
         }
     }
 }

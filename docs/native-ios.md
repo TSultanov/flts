@@ -19,10 +19,11 @@ identity. It needs iOS 18; the Tauri app ran on iOS 15.
   than a fingertip), a swipe turns one spread, a tap in the margin turns the
   page, a long press opens a menu (Look Up, Copy Word/Sentence/Paragraph,
   Translate). A hardware keyboard pages with the arrow keys and Space; W and
-  C toggle the word details and the chapter list. Those keys are shortcuts on
-  the reader screen, not a first responder: as one, the reader made the
-  software keyboard come up whenever a menu opened. Text size and appearance
-  are in the reader's toolbar menu. Layout, paging, drawing and hit testing are
+  C toggle the word details and the chapter list. For those keys the reader
+  is the first responder, with an empty input view: without one, the software
+  keyboard came up whenever a menu opened. (Shortcuts on views, app commands
+  and the app delegate did not receive plain keys reliably.) ⌘ shortcuts are
+  app commands. Text size and appearance are in the reader's toolbar menu. Layout, paging, drawing and hit testing are
   the shared `ReaderCanvas`.
 - **Layout**: two pages side by side when the reader is wide enough (an iPad
   in landscape), one otherwise. At compact width (an iPhone, or an iPad in a
@@ -50,7 +51,7 @@ All of these run in a Simulator, headless, on a fresh copy of the library that
 `make test-macos-native-ui` seeds (run that once first). The app reads its
 library from a host folder through `FLTS_CONFIG_DIR`.
 
-- `make test-ios-native-ui` (about 40 s plus the build): a tour of the
+- `make test-ios-native-ui` (about 60 s plus the build): a tour of the
   library, reader, word details, landscape, chapters, Settings, import and
   onboarding. `SIM=<simulator id> NAME=<label>` picks a simulator; the
   default is an iPad. Screenshots land in
@@ -63,6 +64,12 @@ library from a host folder through `FLTS_CONFIG_DIR`.
 
 Verified this way on an iPad Air 11-inch and an iPhone 17 (iOS 27) and an
 iPhone 16e (iOS 18.4, the minimum).
+
+`native/scripts/ios-container-check.sh` runs the path a real device takes: with
+no test folder the app uses its own container. A fresh install goes through
+onboarding and writes `config.json` under
+`Library/Application Support/com.TS.FLTS/`, where the Tauri app keeps it; with
+a library then placed there, the app lists and opens its books.
 
 ## Not verifiable in the Simulator
 

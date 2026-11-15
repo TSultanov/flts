@@ -27,6 +27,10 @@ final class AppModel {
     var showImport = false
     /// iOS presents Settings as a sheet (macOS has its Settings window).
     var showSettings = false
+    /// The open reader, for app-level keyboard commands on iOS: focus-based
+    /// lookup finds nothing there until something has taken focus.
+    var activeReader: ReaderControls?
+    var activeBook: BookActions?
     var lastError: String?
     /// Set when the open book was deleted (often on another device).
     var deletedBookNotice: String?

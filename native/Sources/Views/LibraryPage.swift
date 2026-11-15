@@ -9,13 +9,21 @@ struct LibraryPage: View {
     /// The list takes the keyboard on arrival, so arrows and Return work at once.
     @FocusState private var listFocused: Bool
 
-    /// On the Mac one selected book has its menu and Delete key; on iOS
-    /// selecting is edit mode, where even one book needs the bar.
-    #if os(macOS)
-    private static let selectionBarThreshold = 1
-    #else
-    private static let selectionBarThreshold = 0
+    #if os(iOS)
+    /// Owned here and handed down, so the page sees what the Edit button sets.
+    @State private var editMode = EditMode.inactive
     #endif
+
+    /// On the Mac one selected book has its menu and Delete key, so the bar is
+    /// for several. On iOS selecting is edit mode: even one book needs the bar
+    /// there, and there is none outside it.
+    private var showsSelectionBar: Bool {
+        #if os(macOS)
+        selection.count > 1
+        #else
+        editMode.isEditing && !selection.isEmpty
+        #endif
+    }
 
     var body: some View {
         @Bindable var model = model
@@ -31,6 +39,9 @@ struct LibraryPage: View {
         }
         .modifier(LibraryChrome(
             moving: $moving, deleting: $deleting, selection: $selection))
+        #if os(iOS)
+        .environment(\.editMode, $editMode)
+        #endif
     }
 
     @ViewBuilder
@@ -82,7 +93,7 @@ struct LibraryPage: View {
                     deleting = selection.compactMap(model.library.book)
                 }
                 .safeAreaInset(edge: .bottom) {
-                    if selection.count > Self.selectionBarThreshold {
+                    if showsSelectionBar {
                         SelectionBar(
                             count: selection.count,
                             move: { moving = selection.compactMap(model.library.book) },
@@ -90,6 +101,12 @@ struct LibraryPage: View {
                             clear: { selection = [] })
                     }
                 }
+                #if os(iOS)
+                // Leaving edit mode drops the selection it made.
+                .onChange(of: editMode.isEditing) { _, editing in
+                    if !editing { selection = [] }
+                }
+                #endif
                 .focused($listFocused)
                 .defaultFocus($listFocused, true)
                 .task {

@@ -1,6 +1,11 @@
 import SwiftUI
 
-struct BookActions {
+/// Compared by what the menus show, so a change of state republishes them.
+struct BookActions: Equatable {
+    static func == (a: BookActions, b: BookActions) -> Bool {
+        a.hasChapters == b.hasChapters && a.chaptersShown == b.chaptersShown && a.wordDetailsShown == b.wordDetailsShown
+    }
+
     let translateChapter: () -> Void
     let toggleWordPanel: () -> Void
     let toggleChapters: () -> Void
