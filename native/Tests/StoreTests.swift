@@ -495,6 +495,65 @@ extension NSView {
         for _ in 0..<6 { canvas.scrollWheel(with: event(dx, phase: 0, momentum: 2)) }
     }
 
+    /// A drag moves the spread with it; where it is let go decides the turn.
+    @Test func dragFollowsAndSettles() async {
+        let canvas = await open(nil, chapter())
+        let step = canvas.columns
+        let width = canvas.bounds.width
+        canvas.go(toPage: step * 2, animated: false)
+
+        // Followed exactly while there is a spread that way.
+        canvas.slide(to: -100)
+        #expect(canvas.slide == -100)
+        // Let go early and slowly: it springs back.
+        canvas.slideEnded(velocity: 0)
+        #expect(canvas.slide == 0 && canvas.spreadStart == step * 2)
+        // Past a quarter of the width: the next spread.
+        canvas.slide(to: -width * 0.3)
+        canvas.slideEnded(velocity: 0)
+        #expect(canvas.slide == 0 && canvas.spreadStart == step * 3, "a long drag forward")
+        // A short but fast flick back.
+        canvas.slide(to: 30)
+        canvas.slideEnded(velocity: 900)
+        #expect(canvas.spreadStart == step * 2, "a flick back")
+        // A flick against the drag's direction does not turn.
+        canvas.slide(to: -30)
+        canvas.slideEnded(velocity: 900)
+        #expect(canvas.spreadStart == step * 2)
+
+        // At the first spread there is nothing before it: the drag resists and returns.
+        canvas.go(toPage: 0, animated: false)
+        canvas.slide(to: 200)
+        #expect(canvas.slide < 100, "no resistance at the start of the chapter")
+        canvas.slideEnded(velocity: 900)
+        #expect(canvas.slide == 0 && canvas.spreadStart == 0)
+    }
+
+    /// Mid-drag the page is redrawn every frame with two spreads; it has to be quick.
+    @Test func dragFramesAreCheap() async throws {
+        let canvas = await open(nil, chapter())
+        canvas.go(toPage: canvas.columns * 2, animated: false)
+        let rep = try #require(canvas.bitmapImageRepForCachingDisplay(in: canvas.bounds))
+        canvas.slide(to: -300)
+        canvas.cacheDisplay(in: canvas.bounds, to: rep)
+        let clock = ContinuousClock()
+        let frames = 30
+        let took = clock.measure {
+            for i in 0..<frames {
+                canvas.slide(to: -300 - CGFloat(i))
+                canvas.cacheDisplay(in: canvas.bounds, to: rep)
+            }
+        }
+        if let path = ProcessInfo.processInfo.environment["FLTS_TEST_RENDER_DRAG"], !path.isEmpty {
+            canvas.slide(to: -420)
+            canvas.cacheDisplay(in: canvas.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+        }
+        let perFrame = took / frames
+        print("DRAG-FRAME \(perFrame)")
+        #expect(perFrame < .milliseconds(12), "a drag frame takes \(perFrame)")
+    }
+
     /// One swipe turns one spread, in either direction, however long it glides.
     @Test func swipeTurnsOneSpread() async {
         let canvas = await open(nil, chapter())

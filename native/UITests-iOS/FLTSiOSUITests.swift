@@ -369,6 +369,19 @@ final class FLTSiOSTour: XCTestCase {
         page.swipeRight()
         XCTAssertTrue(until(3) { page.label == before }, "a swipe back did not return: \(after) → \(page.label)")
 
+        // A short, slow drag lets the page spring back; a long one turns it.
+        let rested = page.label
+        let from = page.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5))
+        from.press(forDuration: 0.1, thenDragTo: page.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5)),
+            withVelocity: .slow, thenHoldForDuration: 0.3)
+        pause(0.6)
+        XCTAssertEqual(page.label, rested, "a short drag turned the page")
+        from.press(forDuration: 0.1, thenDragTo: page.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5)),
+            withVelocity: .slow, thenHoldForDuration: 0.3)
+        XCTAssertTrue(until(3) { page.label != rested }, "a long drag did not turn the page")
+        page.swipeRight()
+        XCTAssertTrue(until(3) { page.label == rested })
+
         // Back to the library; a book with chapters has a Chapters button.
         app.buttons["Library"].firstMatch.tap()
         let chaptered = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Cuentos breves'")).firstMatch

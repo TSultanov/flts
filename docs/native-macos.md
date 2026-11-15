@@ -29,7 +29,8 @@ double-click or Return opens, the context menu and Delete act on the whole
 selection). An open book is the reader alone; its chapter list slides over the
 page from the left (the Chapters button, C, or ⌃⌘C), takes the keyboard (arrows,
 Return, Escape) and closes on a pick, so the
-text never reflows. The word bar runs along the bottom: word, dictionary form,
+text never reflows. A trackpad swipe slides the spread with the fingers, the
+next one coming in beside it, and turns it when let go far or fast enough. The word bar runs along the bottom: word, dictionary form,
 transcription, translations, and Anki; W (or ⌃⌘W) replaces it with the word's
 details, which grow upward over the page. Back to the library is the toolbar's
 Library button (⌥⌘L). Sync status, Anki sync and Lyrics sit in the library's

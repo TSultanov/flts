@@ -224,19 +224,22 @@ extension ReaderCanvas: NSMenuItemValidation {
             if event.scrollingDeltaY < 0 || event.scrollingDeltaX < 0 { nextSpread() } else { previousSpread() }
             return
         }
-        if event.phase == .began {
+        // The glide after lifting the fingers: the spread is already settling.
+        guard event.momentumPhase.isEmpty else { return }
+        if event.phase.contains(.began) {
             swipeAccumulator = 0
-            swipeConsumed = false
+            swipeLastDelta = 0
         }
-        guard !swipeConsumed else { return }
+        // The spread follows the fingers, like a page being pushed aside.
         let delta = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) ? event.scrollingDeltaX : event.scrollingDeltaY
-        swipeAccumulator += delta
-        if swipeAccumulator < -60 {
-            swipeConsumed = true
-            nextSpread()
-        } else if swipeAccumulator > 60 {
-            swipeConsumed = true
-            previousSpread()
+        if delta != 0 {
+            swipeAccumulator += delta
+            swipeLastDelta = delta
+            slide(to: swipeAccumulator)
+        }
+        if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+            // Deltas come about 60 times a second.
+            slideEnded(velocity: swipeLastDelta * 60)
         }
     }
 }

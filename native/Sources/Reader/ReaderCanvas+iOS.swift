@@ -113,13 +113,20 @@ extension ReaderCanvas: @preconcurrency UIEditMenuInteractionDelegate {
         return nil
     }
 
-    /// One swipe turns one spread, on lifting the finger.
+    /// The spread follows the finger; lifting it turns the spread or lets it spring back.
     @objc private func panned(_ gesture: UIPanGestureRecognizer) {
-        guard gesture.state == .ended else { return }
-        let moved = gesture.translation(in: self)
-        let speed = gesture.velocity(in: self)
-        guard abs(moved.x) > abs(moved.y), abs(moved.x) > 40 || abs(speed.x) > 500 else { return }
-        if moved.x < 0 { nextSpread() } else { previousSpread() }
+        switch gesture.state {
+        case .changed:
+            let moved = gesture.translation(in: self)
+            // Sideways drags only, unless the spread is already on the move.
+            if abs(moved.x) > abs(moved.y) || slide != 0 { slide(to: moved.x) }
+        case .ended:
+            slideEnded(velocity: gesture.velocity(in: self).x)
+        case .cancelled, .failed:
+            slideEnded(velocity: 0)
+        default:
+            break
+        }
     }
 
     @objc private func longPressed(_ gesture: UILongPressGestureRecognizer) {

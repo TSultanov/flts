@@ -63,6 +63,12 @@ final class ReaderCanvas: PlatformView {
     /// Full layouts started off the main thread, for tests.
     private(set) var fullLayoutsStarted = 0
     var swipeAccumulator: CGFloat = 0
+    var swipeLastDelta: CGFloat = 0
+    /// How far the spread is dragged sideways, in points.
+    private(set) var slide: CGFloat = 0 {
+        didSet { if slide != oldValue { redraw() } }
+    }
+    private var slideTimer: Timer?
 
     /// A dragged text selection, as a storage range of the current layout.
     var textSelection: NSRange? {
@@ -289,17 +295,29 @@ final class ReaderCanvas: PlatformView {
         PlatformColor.readerBackground.setFill()
         ctx.fill(dirtyRect)
         guard !text.pages.isEmpty else { return }
-        for column in 0..<columns {
-            let index = spreadStart + column
-            guard index >= 0 else { continue }
-            guard index < text.pages.count else { break }
-            drawPage(text.pages[index], at: CGPoint(x: columnX(column), y: margins.top), in: ctx)
+        ctx.saveGState()
+        ctx.translateBy(x: slide, y: 0)
+        drawSpread(from: spreadStart, in: ctx)
+        // While it is dragged aside, the spread it uncovers shows beside it.
+        if slide != 0, let other = neighbour(slide < 0 ? 1 : -1) {
+            ctx.translateBy(x: slide < 0 ? bounds.width : -bounds.width, y: 0)
+            drawSpread(from: other, in: ctx)
         }
+        ctx.restoreGState()
         drawFooter()
         let rects = visibleControlRects().map(\.1)
         if rects != controlSignature {
             controlSignature = rects
             controlsMoved()
+        }
+    }
+
+    private func drawSpread(from start: Int, in ctx: CGContext) {
+        for column in 0..<columns {
+            let index = start + column
+            guard index >= 0 else { continue }
+            guard index < text.pages.count else { break }
+            drawPage(text.pages[index], at: CGPoint(x: columnX(column), y: margins.top), in: ctx)
         }
     }
 
@@ -582,21 +600,21 @@ final class ReaderCanvas: PlatformView {
 
     // MARK: Paging
 
-    func go(toPage page: Int, animated: Bool = true) {
-        guard !text.pages.isEmpty else { return }
+    /// The spread of the current pairing that holds a page; nil if it is the one shown.
+    private func spreadTarget(for page: Int) -> Int? {
+        guard !text.pages.isEmpty else { return nil }
         let clamped = min(max(page, 0), text.pages.count - 1)
-        // The spread of the current pairing that holds the page.
         let phase = ((spreadStart % columns) + columns) % columns
         let target = clamped - (((clamped - phase) % columns) + columns) % columns
-        guard target != spreadStart else { return }
-        if animated, !AppDefaults.animationsOff, let layer = flipLayer {
-            let transition = CATransition()
-            transition.type = .push
-            transition.subtype = target > spreadStart ? .fromRight : .fromLeft
-            transition.duration = 0.18
-            transition.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            layer.add(transition, forKey: "flip")
-        }
+        return target == spreadStart ? nil : target
+    }
+
+    /// The next (+1) or previous (-1) spread, if there is one.
+    private func neighbour(_ direction: Int) -> Int? {
+        spreadTarget(for: spreadStart + direction * columns)
+    }
+
+    private func show(spread target: Int) {
         spreadStart = target
         textSelection = nil
         sticky = currentAnchor()
@@ -605,12 +623,85 @@ final class ReaderCanvas: PlatformView {
         pageChanged()
     }
 
+    func go(toPage page: Int, animated: Bool = true) {
+        guard let target = spreadTarget(for: page) else { return }
+        endSlide()
+        if animated, !AppDefaults.animationsOff, let layer = flipLayer {
+            let transition = CATransition()
+            transition.type = .push
+            transition.subtype = target > spreadStart ? .fromRight : .fromLeft
+            transition.duration = 0.18
+            transition.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            layer.add(transition, forKey: "flip")
+        }
+        show(spread: target)
+    }
+
+    // MARK: Sliding
+
+    /// A trackpad swipe or a finger drags the spread sideways by `offset`
+    /// (negative toward the next spread). With no spread that way it resists.
+    func slide(to offset: CGFloat) {
+        slideTimer?.invalidate()
+        slideTimer = nil
+        slide = neighbour(offset < 0 ? 1 : -1) == nil ? offset * 0.2 : offset
+    }
+
+    /// The drag ended: far or fast enough turns the spread, otherwise it springs back.
+    func slideEnded(velocity: CGFloat) {
+        guard slide != 0 else { return }
+        let forward = slide < 0
+        let far = abs(slide) > bounds.width * 0.22 || (abs(velocity) > 350 && (velocity < 0) == forward)
+        if far, let target = neighbour(forward ? 1 : -1) {
+            animateSlide(to: forward ? -bounds.width : bounds.width) { [weak self] in
+                self?.slide = 0
+                self?.show(spread: target)
+            }
+        } else {
+            animateSlide(to: 0) {}
+        }
+    }
+
+    /// Drops a slide in progress, e.g. when a key turns the page mid-drag.
+    private func endSlide() {
+        slideTimer?.invalidate()
+        slideTimer = nil
+        slide = 0
+    }
+
+    private func animateSlide(to end: CGFloat, completion: @escaping @MainActor () -> Void) {
+        slideTimer?.invalidate()
+        slideTimer = nil
+        let start = slide
+        // Nothing to watch off screen (tests), or animations are off.
+        guard window != nil, !AppDefaults.animationsOff, bounds.width > 0, start != end else {
+            slide = end
+            completion()
+            return
+        }
+        let duration = 0.12 + 0.16 * Double(min(abs(end - start) / bounds.width, 1))
+        let began = CACurrentMediaTime()
+        let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let t = min((CACurrentMediaTime() - began) / duration, 1)
+                let eased = 1 - pow(1 - t, 3)
+                self.slide = start + (end - start) * eased
+                if t >= 1 {
+                    self.slideTimer?.invalidate()
+                    self.slideTimer = nil
+                    completion()
+                }
+            }
+        }
+        slideTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
     func nextSpread() { go(toPage: spreadStart + columns) }
     func previousSpread() { go(toPage: spreadStart - columns) }
 
     var lastWheelFlip: TimeInterval = 0
-    /// This swipe has turned its spread; the rest of it, and its glide, do nothing.
-    var swipeConsumed = false
 
     /// Shows the page holding a paragraph (e.g. one selected elsewhere).
     func reveal(paragraphId: Int) {

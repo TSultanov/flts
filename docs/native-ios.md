@@ -16,8 +16,9 @@ identity. It needs iOS 18; the Tauri app ran on iOS 15.
   window; there are no menus. Coming back to the foreground wakes sync.
 - **Reader input** (`Reader/ReaderCanvas+iOS.swift`): a tap selects a word and
   shows its translation (a near miss still counts: short words are narrower
-  than a fingertip), a swipe turns one spread, a tap in the margin turns the
-  page, a long press opens a menu (Look Up, Copy Word/Sentence/Paragraph,
+  than a fingertip), a drag slides the spread with the finger and turns it
+  when let go far or fast enough (it springs back otherwise), a tap in the
+  margin turns the page, a long press opens a menu (Look Up, Copy Word/Sentence/Paragraph,
   Translate). A hardware keyboard pages with the arrow keys and Space; W and
   C toggle the word details and the chapter list. For those keys the reader
   is the first responder, with an empty input view: without one, the software

@@ -376,6 +376,13 @@ final class FLTSScreenshotTour: XCTestCase {
         XCTAssertFalse(app.buttons["Chapters"].firstMatch.exists, "a one-chapter book has a chapters button")
         assertFlips(app, "after C on a one-chapter book")
 
+        // A two-finger scroll turns the spread, either way.
+        let scrolled = page.label
+        page.scroll(byDeltaX: -400, deltaY: 0)
+        XCTAssertTrue(until(3) { page.label != scrolled }, "a scroll did not turn the page")
+        page.scroll(byDeltaX: 400, deltaY: 0)
+        XCTAssertTrue(until(3) { page.label == scrolled }, "a scroll back did not return")
+
         // Text size from the keyboard, past the upper limit and back (this used to crash).
         for _ in 0..<3 { app.typeKey("+", modifierFlags: .command) }
         pause()
