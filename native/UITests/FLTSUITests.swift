@@ -411,6 +411,16 @@ final class FLTSScreenshotTour: XCTestCase {
         pause()
         shot(window, "6-library-folder")
 
+        // The arrow keys reach a folder, open or closed: Left closes it, and from
+        // the row below, Up lands on the closed folder, where Right opens it again.
+        folder.click()
+        app.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertTrue(until(3) { !book.exists }, "Left did not close the selected folder")
+        app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Cuentos breves' OR value CONTAINS 'Cuentos breves'")).firstMatch.click()
+        app.typeKey(.upArrow, modifierFlags: [])
+        app.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertTrue(book.appears(timeout: 3), "the arrow keys did not reach the closed folder")
+
         // A book with chapters: the list is hidden until C, and closes after a pick.
         let epub = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Cuentos breves' OR value CONTAINS 'Cuentos breves'")).firstMatch
         XCTAssertTrue(epub.appears(timeout: 5), "the multi-chapter fixture book is missing")

@@ -17,11 +17,30 @@ struct LibraryPage: View {
     /// On the Mac one selected book has its menu and Delete key, so the bar is
     /// for several. On iOS selecting is edit mode: even one book needs the bar
     /// there, and there is none outside it.
+    private var selectedBooks: [BookMeta] {
+        selection.compactMap(model.library.book)
+    }
+
+    /// The folder the keyboard is on, when it is the only thing selected.
+    private var selectedFolder: LibraryFolder? {
+        guard selection.count == 1, let id = selection.first else { return nil }
+        return model.library.tree.allFolders.first { $0.selectionID == id }
+    }
+
+    /// Right opens the selected folder, Left closes it, Return toggles it.
+    private func folderKey(open: Bool?) -> KeyPress.Result {
+        guard let folder = selectedFolder else { return .ignored }
+        var expanded = model.library.expandedFolders
+        if open ?? !expanded.contains(folder.path) { expanded.insert(folder.path) } else { expanded.remove(folder.path) }
+        model.library.expandedFolders = expanded
+        return .handled
+    }
+
     private var showsSelectionBar: Bool {
         #if os(macOS)
-        selection.count > 1
+        selectedBooks.count > 1
         #else
-        editMode.isEditing && !selection.isEmpty
+        editMode.isEditing && !selectedBooks.isEmpty
         #endif
     }
 
@@ -87,17 +106,22 @@ struct LibraryPage: View {
                         }
                     }
                 } primaryAction: { ids in
-                    if ids.count == 1, let id = ids.first { open(id) }
+                    guard ids.count == 1, let id = ids.first else { return }
+                    // A folder in the selection opens or closes; a book opens.
+                    if model.library.book(id) != nil { open(id) } else { _ = folderKey(open: nil) }
                 }
+                .onKeyPress(.rightArrow) { folderKey(open: true) }
+                .onKeyPress(.leftArrow) { folderKey(open: false) }
+                .onKeyPress(.return) { folderKey(open: nil) }
                 .onDeleteKey {
-                    deleting = selection.compactMap(model.library.book)
+                    deleting = selectedBooks
                 }
                 .safeAreaInset(edge: .bottom) {
                     if showsSelectionBar {
                         SelectionBar(
-                            count: selection.count,
-                            move: { moving = selection.compactMap(model.library.book) },
-                            delete: { deleting = selection.compactMap(model.library.book) },
+                            count: selectedBooks.count,
+                            move: { moving = selectedBooks },
+                            delete: { deleting = selectedBooks },
                             clear: { selection = [] })
                     }
                 }
@@ -216,6 +240,8 @@ private struct FolderContents: View {
                 Label(child.name, systemImage: "folder")
                     .font(.headline)
             }
+            // Selectable, so the arrow keys reach a folder, open or closed.
+            .tag(child.selectionID)
         }
         ForEach(folder.books) { book in
             BookRow(book: book)

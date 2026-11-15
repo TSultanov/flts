@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Observation
 
@@ -8,6 +9,19 @@ struct LibraryFolder: Identifiable, Hashable {
     var books: [BookMeta] = []
 
     var id: String { "folder:" + path.joined(separator: "/") }
+
+    /// A folder's place in the library list's selection, which is of book ids:
+    /// a stable UUID made from its path, so arrow keys can land on it.
+    var selectionID: UUID {
+        let digest = SHA256.hash(data: Data(id.utf8))
+        let b = Array(digest.prefix(16))
+        return UUID(uuid: (b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]))
+    }
+
+    /// Every folder below this one, at any depth.
+    var allFolders: [LibraryFolder] {
+        folders.flatMap { [$0] + $0.allFolders }
+    }
     var name: String { path.last ?? "Library" }
 
     static func build(_ books: [BookMeta]) -> LibraryFolder {
