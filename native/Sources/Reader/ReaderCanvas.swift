@@ -1,4 +1,8 @@
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import QuartzCore
 
 /// A reading position: the synced (paragraph, pages into it) pair, plus the
@@ -26,15 +30,15 @@ protocol ReaderCanvasDelegate: AnyObject {
 /// keys and swipes into reader actions. Flipping only changes which bands are
 /// drawn; text is never re-laid out for it.
 @MainActor
-final class ReaderCanvas: NSView, NSMenuItemValidation {
+final class ReaderCanvas: PlatformView {
     /// What is drawn: the full chapter, or while that is laid out off the
     /// main thread, a provisional layout starting at the reading position.
     private(set) var text = ChapterTextLayout()
     private(set) var isProvisional = false
-    private var order: [Int] = []
-    private var paragraphs: [Int: ParagraphText] = [:]
-    private var typography = ReaderTypography()
-    private var generation = 0
+    var order: [Int] = []
+    var paragraphs: [Int: ParagraphText] = [:]
+    var typography = ReaderTypography()
+    var generation = 0
     /// Set when the full layout lands, for tests and timing.
     var onFullLayout: (() -> Void)?
     /// Lets tests simulate a window drag.
@@ -45,32 +49,32 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
     /// opened with, so no page is ever shown in two of them; when that pairing
     /// is odd, the first spread starts one page early, with a blank left page.
     private(set) var spreadStart = 0
-    private var firstVisiblePage: Int { max(spreadStart, 0) }
+    var firstVisiblePage: Int { max(spreadStart, 0) }
     private(set) var columns = 1
-    private var columnWidth: CGFloat = 400
-    private var laidOutSize: CGSize = .zero
-    private var pendingAnchor: ReadingAnchor?
+    var columnWidth: CGFloat = 400
+    var laidOutSize: CGSize = .zero
+    var pendingAnchor: ReadingAnchor?
     /// Where the reader is, as last set by the reader (opening, flipping).
     /// Relayouts restore to it rather than to whatever line they snapped to,
     /// so resizes and sidebar animations cannot walk the position.
-    private var sticky: ReadingAnchor?
+    var sticky: ReadingAnchor?
     /// Full layouts started off the main thread, for tests.
     private(set) var fullLayoutsStarted = 0
-    private var swipeAccumulator: CGFloat = 0
+    var swipeAccumulator: CGFloat = 0
 
     /// A dragged text selection, as a storage range of the current layout.
-    private(set) var textSelection: NSRange? {
-        didSet { needsDisplay = true }
+    var textSelection: NSRange? {
+        didSet { redraw() }
     }
-    private var dragAnchor: Int?
-    private var dragged = false
+    var dragAnchor: Int?
+    var dragged = false
 
     var selected: (paragraphId: Int, wordIndex: Int)? {
-        didSet { needsDisplay = true }
+        didSet { redraw() }
     }
     /// Words whose translation is shown above them.
     var revealed: Set<WordKey> = [] {
-        didSet { needsDisplay = true }
+        didSet { redraw() }
     }
 
     struct WordKey: Hashable {
@@ -78,17 +82,12 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         let wordIndex: Int
     }
 
-    var margins = NSEdgeInsets(top: 40, left: 56, bottom: 44, right: 56)
+    var margins = PlatformEdgeInsets(top: 40, left: 56, bottom: 44, right: 56)
     var columnGap: CGFloat = 64
 
-    override var isFlipped: Bool { true }
-    override var acceptsFirstResponder: Bool { true }
-    override var isOpaque: Bool { true }
-
-    override init(frame: NSRect) {
+    override init(frame: CGRect) {
         super.init(frame: frame)
-        wantsLayer = true
-        layerContentsRedrawPolicy = .onSetNeedsDisplay
+        platformSetUp()
     }
 
     @available(*, unavailable)
@@ -105,14 +104,14 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         pendingAnchor = anchor
         sticky = anchor
         laidOutSize = .zero
-        needsLayout = true
-        needsDisplay = true
+        relayoutSoon()
+        redraw()
     }
 
     /// Changed paragraphs not yet applied; applied a few per run-loop turn so
     /// a burst (sync, a finished chapter) never blocks a frame for long.
-    private var pendingChanges: [Int: ParagraphText] = [:]
-    private var drainScheduled = false
+    var pendingChanges: [Int: ParagraphText] = [:]
+    var drainScheduled = false
     static let changesPerTurn = 5
     /// Set when queued changes are all applied, for tests and timing.
     var onChangesApplied: (() -> Void)?
@@ -128,7 +127,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         scheduleDrain()
     }
 
-    private func scheduleDrain() {
+    func scheduleDrain() {
         guard !drainScheduled else { return }
         drainScheduled = true
         DispatchQueue.main.async { [weak self] in
@@ -136,7 +135,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         }
     }
 
-    private func drainChanges() {
+    func drainChanges() {
         drainScheduled = false
         guard !isProvisional else { return }
         let ids = pendingChanges.keys.sorted().prefix(Self.changesPerTurn)
@@ -147,7 +146,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
             text.replace(batch)
             text.layout(width: columnWidth, pageHeight: text.pageHeight, breakAt: keep)
             spreadStart = keep.flatMap { text.page(of: $0) } ?? min(spreadStart, text.pages.count - 1)
-            needsDisplay = true
+            redraw()
             delegate?.reader(self, movedTo: spreadStart, of: text.pages.count)
         }
         if pendingChanges.isEmpty {
@@ -176,30 +175,16 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
     /// The paragraph as the reader has it (including changes not yet laid out).
     func contentParagraph(_ id: Int) -> ParagraphText? { paragraphs[id] }
 
-    /// Keys must reach the reader as soon as it shows; a request made before it
-    /// had a window would have been dropped.
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        guard let window else { return }
-        DispatchQueue.main.async { [weak self, weak window] in
-            guard let self, let window, self.window === window else { return }
-            let current = window.firstResponder
-            if current == nil || current === window || !(current is NSView) || (current as? NSView)?.window == nil {
-                window.makeFirstResponder(self)
-            }
-        }
-    }
-
     // MARK: Layout
 
-    override func layout() {
-        super.layout()
+    /// Called by the platform's layout pass.
+    func sizeChanged() {
         if bounds.size != laidOutSize {
             relayout(keeping: laidOutSize == .zero ? pendingAnchor : (sticky ?? currentAnchor()))
         }
     }
 
-    private func relayout(keeping anchor: ReadingAnchor?) {
+    func relayout(keeping anchor: ReadingAnchor?) {
         let size = bounds.size
         guard size.width > 0, size.height > 0, !order.isEmpty else { return }
         laidOutSize = size
@@ -238,13 +223,13 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         } else {
             spreadStart = 0
         }
-        needsDisplay = true
+        redraw()
         delegate?.reader(self, movedTo: spreadStart, of: text.pages.count)
 
         generation += 1
         let gen = generation
         // During a live resize only the cheap layout runs; the full one follows the drag.
-        if inLiveResize || inLiveResizeOverride, isProvisional { return }
+        if isResizingLive || inLiveResizeOverride, isProvisional { return }
         guard isProvisional else {
             onFullLayout?()
             return
@@ -257,7 +242,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         }
     }
 
-    private func startFullLayout(generation gen: Int, pageHeight: CGFloat) {
+    func startFullLayout(generation gen: Int, pageHeight: CGFloat) {
         fullLayoutsStarted += 1
         let (order, paragraphs, typography, width) = (self.order, self.paragraphs, self.typography, columnWidth)
         Task.detached(priority: .userInitiated) {
@@ -270,13 +255,8 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         }
     }
 
-    override func viewDidEndLiveResize() {
-        super.viewDidEndLiveResize()
-        if isProvisional { relayout(keeping: sticky ?? currentAnchor()) }
-    }
-
     /// Swaps in the full layout, re-cut so the visible line still starts the page.
-    private func adopt(_ full: ChapterTextLayout, generation gen: Int) {
+    func adopt(_ full: ChapterTextLayout, generation gen: Int) {
         guard gen == generation else { return }
         let keep = text.lineAnchor(forPage: firstVisiblePage)
         full.paginate(breakAt: keep)
@@ -286,7 +266,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         isProvisional = false
         spreadStart = keep.flatMap { full.page(of: $0) } ?? 0
         selected = selectedBefore
-        needsDisplay = true
+        redraw()
         delegate?.reader(self, movedTo: spreadStart, of: text.pages.count)
         // Changes that arrived after this layout started.
         if !pendingChanges.isEmpty { scheduleDrain() }
@@ -294,7 +274,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
     }
 
     /// Left edge of a column in view coordinates (the spread is centered).
-    private func columnX(_ column: Int) -> CGFloat {
+    func columnX(_ column: Int) -> CGFloat {
         let spreadWidth = columnWidth * CGFloat(columns) + columnGap * CGFloat(columns - 1)
         let left = max(margins.left, (bounds.width - spreadWidth) / 2)
         return left + CGFloat(column) * (columnWidth + columnGap)
@@ -302,10 +282,11 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
 
     // MARK: Drawing
 
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.textBackgroundColor.setFill()
-        dirtyRect.fill()
-        guard let ctx = NSGraphicsContext.current?.cgContext, !text.pages.isEmpty else { return }
+    /// The platform's `draw` calls this with its current context.
+    func drawContents(_ dirtyRect: CGRect, in ctx: CGContext) {
+        PlatformColor.readerBackground.setFill()
+        ctx.fill(dirtyRect)
+        guard !text.pages.isEmpty else { return }
         for column in 0..<columns {
             let index = spreadStart + column
             guard index >= 0 else { continue }
@@ -316,11 +297,11 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         let rects = visibleControlRects().map(\.1)
         if rects != controlSignature {
             controlSignature = rects
-            window?.invalidateCursorRects(for: self)
+            controlsMoved()
         }
     }
 
-    private func drawPage(_ page: ReaderPage, at origin: CGPoint, in ctx: CGContext) {
+    func drawPage(_ page: ReaderPage, at origin: CGPoint, in ctx: CGContext) {
         let dy = origin.y - page.top
         let band = CGRect(x: origin.x - columnGap / 2, y: origin.y, width: columnWidth + columnGap, height: page.bottom - page.top)
 
@@ -331,17 +312,18 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         ctx.clip(to: band.offsetBy(dx: 0, dy: descent))
 
         if let range = textSelection, range.length > 0 {
-            NSColor.selectedTextBackgroundColor.setFill()
+            PlatformColor.readerSelection.setFill()
             for frame in text.frames(of: range) {
-                highlightRect(frame).offsetBy(dx: origin.x, dy: dy).fill()
+                ctx.fill(highlightRect(frame).offsetBy(dx: origin.x, dy: dy))
             }
         }
 
         if let sel = selected, let range = text.wordRange(paragraphId: sel.paragraphId, wordIndex: sel.wordIndex) {
-            NSColor.controlAccentColor.withAlphaComponent(0.22).setFill()
+            PlatformColor.readerAccent.withAlphaComponent(0.22).setFill()
             for frame in text.frames(of: range) {
                 let r = highlightRect(frame).offsetBy(dx: origin.x, dy: dy).insetBy(dx: -2, dy: 0)
-                NSBezierPath(roundedRect: r, xRadius: 3, yRadius: 3).fill()
+                ctx.addPath(CGPath(roundedRect: r, cornerWidth: 3, cornerHeight: 3, transform: nil))
+                ctx.fillPath()
             }
         }
 
@@ -354,12 +336,12 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         ctx.saveGState()
         ctx.clip(to: band)
         drawTranslations(in: page, origin: origin, dy: dy)
-        drawParagraphControls(in: page, origin: origin, dy: dy)
+        drawParagraphControls(in: page, origin: origin, dy: dy, ctx: ctx)
         ctx.restoreGState()
     }
 
     /// The glyph box inside a line-height-tall segment frame; extra leading sits above.
-    private func glyphRect(_ frame: CGRect) -> CGRect {
+    func glyphRect(_ frame: CGRect) -> CGRect {
         let fontSize = text.typography.fontSize
         let glyphHeight = (fontSize * 1.3).rounded()
         return CGRect(x: frame.minX, y: frame.maxY - glyphHeight, width: frame.width, height: glyphHeight)
@@ -367,13 +349,13 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
 
     /// The glyph box without the headroom above tall letters, where a word's
     /// translation is drawn: a highlight must not reach under it.
-    private func highlightRect(_ frame: CGRect) -> CGRect {
+    func highlightRect(_ frame: CGRect) -> CGRect {
         let glyph = glyphRect(frame)
         let headroom = (text.typography.fontSize * 0.2).rounded()
         return CGRect(x: glyph.minX, y: glyph.minY + headroom, width: glyph.width, height: glyph.height - headroom)
     }
 
-    private func drawTranslations(in page: ReaderPage, origin: CGPoint, dy: CGFloat) {
+    func drawTranslations(in page: ReaderPage, origin: CGPoint, dy: CGFloat) {
         guard !revealed.isEmpty else { return }
         let font = text.typography.translationFont
         let style = NSMutableParagraphStyle()
@@ -388,13 +370,13 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
             else { continue }
             let glyph = glyphRect(first)
             var attrs: [NSAttributedString.Key: Any] = [
-                .font: font, .foregroundColor: NSColor.controlAccentColor, .paragraphStyle: style,
+                .font: font, .foregroundColor: PlatformColor.readerAccent, .paragraphStyle: style,
             ]
             var size = (translation as NSString).size(withAttributes: attrs)
             // Shrink to the word's width, as the web app does.
             if size.width > glyph.width, glyph.width > 0 {
                 let scale = glyph.width / size.width
-                let shrunk = NSFont.systemFont(ofSize: font.pointSize * scale)
+                let shrunk = PlatformFont.systemFont(ofSize: font.pointSize * scale)
                 attrs[.font] = shrunk
                 size = (translation as NSString).size(withAttributes: attrs)
             }
@@ -406,41 +388,34 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         }
     }
 
-    private static let translateSymbol: NSImage? = {
-        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
-        return NSImage(systemSymbolName: "character.bubble", accessibilityDescription: "Translate paragraph")?
-            .withSymbolConfiguration(config)
-    }()
-
-    private func drawParagraphControls(in page: ReaderPage, origin: CGPoint, dy: CGFloat) {
+    func drawParagraphControls(in page: ReaderPage, origin: CGPoint, dy: CGFloat, ctx: CGContext) {
         for (pid, rect) in controlRects(in: page, origin: origin, dy: dy) {
             if let progress = delegate?.readerTranslationProgress(self, paragraphId: pid) {
-                drawProgress(progress, in: rect)
-            } else if let symbol = Self.translateSymbol {
+                drawProgress(progress, in: rect, ctx: ctx)
+            } else {
                 let enabled = delegate?.readerCanTranslate(self) ?? true
-                let tinted = symbol.tinted(enabled ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor.withAlphaComponent(0.35))
-                tinted.draw(in: rect.insetBy(dx: (rect.width - symbol.size.width) / 2, dy: (rect.height - symbol.size.height) / 2))
+                let tint = enabled ? PlatformColor.readerSecondary : PlatformColor.readerTertiary.withAlphaComponent(0.35)
+                guard let symbol = PlatformImage.readerSymbol("character.bubble", pointSize: 13, tint: tint) else { continue }
+                symbol.draw(in: rect.insetBy(dx: (rect.width - symbol.size.width) / 2, dy: (rect.height - symbol.size.height) / 2))
             }
         }
     }
 
-    private func drawProgress(_ progress: Double, in rect: CGRect) {
+    func drawProgress(_ progress: Double, in rect: CGRect, ctx: CGContext) {
         let ring = rect.insetBy(dx: 4, dy: 4)
-        NSColor.tertiaryLabelColor.setStroke()
-        let track = NSBezierPath(ovalIn: ring)
-        track.lineWidth = 2.5
-        track.stroke()
-        NSColor.controlAccentColor.setStroke()
-        let arc = NSBezierPath()
-        let center = CGPoint(x: ring.midX, y: ring.midY)
-        let end = -90 + 360 * min(max(progress, 0.03), 1)
-        arc.appendArc(withCenter: center, radius: ring.width / 2, startAngle: -90, endAngle: end, clockwise: false)
-        arc.lineWidth = 2.5
-        arc.stroke()
+        ctx.setLineWidth(2.5)
+        PlatformColor.readerTertiary.setStroke()
+        ctx.strokeEllipse(in: ring)
+        PlatformColor.readerAccent.setStroke()
+        let start = -CGFloat.pi / 2
+        ctx.addArc(
+            center: CGPoint(x: ring.midX, y: ring.midY), radius: ring.width / 2, startAngle: start,
+            endAngle: start + 2 * .pi * min(max(progress, 0.03), 1), clockwise: false)
+        ctx.strokePath()
     }
 
     /// Gutter buttons for untranslated or translating paragraphs that start on this page.
-    private func controlRects(in page: ReaderPage, origin: CGPoint, dy: CGFloat) -> [(Int, CGRect)] {
+    func controlRects(in page: ReaderPage, origin: CGPoint, dy: CGFloat) -> [(Int, CGRect)] {
         var out: [(Int, CGRect)] = []
         let size: CGFloat = 22
         for line in text.lines where line.top >= page.top && line.top < page.bottom {
@@ -456,7 +431,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         return out
     }
 
-    private func drawFooter() {
+    func drawFooter() {
         guard !text.pages.isEmpty else { return }
         let last = min(spreadStart + columns, text.pages.count)
         var label =
@@ -464,8 +439,8 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
             ? "\(firstVisiblePage + 1)–\(last) of \(text.pages.count)" : "\(firstVisiblePage + 1) of \(text.pages.count)"
         if isProvisional { label = "…" }
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
-            .foregroundColor: NSColor.tertiaryLabelColor,
+            .font: PlatformFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
+            .foregroundColor: PlatformColor.readerTertiary,
         ]
         let size = (label as NSString).size(withAttributes: attrs)
         let point = CGPoint(x: (bounds.width - size.width) / 2, y: bounds.height - margins.bottom / 2 - size.height / 2)
@@ -474,7 +449,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
 
     // MARK: Hit testing
 
-    private func locate(_ viewPoint: CGPoint) -> (column: Int, point: CGPoint)? {
+    func locate(_ viewPoint: CGPoint) -> (column: Int, point: CGPoint)? {
         for column in 0..<columns {
             let index = spreadStart + column
             guard index >= 0 else { continue }
@@ -491,7 +466,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         return nil
     }
 
-    private func controlHit(_ viewPoint: CGPoint) -> Int? {
+    func controlHit(_ viewPoint: CGPoint) -> Int? {
         for column in 0..<columns {
             let index = spreadStart + column
             guard index >= 0 else { continue }
@@ -518,61 +493,40 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         return text.hit(at: point)
     }
 
-    override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
-        let point = convert(event.locationInWindow, from: nil)
-        dragged = false
-        if let pid = controlHit(point) {
-            dragAnchor = nil
-            if delegate?.readerTranslationProgress(self, paragraphId: pid) == nil,
-                delegate?.readerCanTranslate(self) ?? true
-            {
-                // ⌘- or ⌃-click translates afresh, skipping the cache (as in the web app).
-                let fresh = !event.modifierFlags.intersection([.command, .control]).isEmpty
-                delegate?.reader(self, translate: pid, useCache: !fresh)
-            }
-            return
+    /// A press on a paragraph's translate button; false if the point is not on one.
+    /// `fresh` translates again without the cache.
+    func activateControl(at point: CGPoint, fresh: Bool) -> Bool {
+        guard let pid = controlHit(point) else { return false }
+        if delegate?.readerTranslationProgress(self, paragraphId: pid) == nil, delegate?.readerCanTranslate(self) ?? true {
+            delegate?.reader(self, translate: pid, useCache: !fresh)
         }
-        textSelection = nil
-        dragAnchor = offset(at: point)
+        return true
     }
 
-    override func mouseDragged(with event: NSEvent) {
-        guard let anchor = dragAnchor, let current = offset(at: convert(event.locationInWindow, from: nil)) else {
-            return
-        }
-        dragged = true
-        textSelection = NSRange(location: min(anchor, current), length: abs(current - anchor))
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        defer { dragAnchor = nil }
-        guard dragAnchor != nil, !dragged else { return }
-        // A click without a drag: reveal the word's translation and select it.
-        let point = convert(event.locationInWindow, from: nil)
+    /// A tap on the text: reveals the word's translation and selects it; on
+    /// empty space it deselects, as in the web app.
+    func selectWord(at point: CGPoint) {
         guard let hit = hit(point), let word = hit.wordIndex else {
-            // A click on empty space deselects, as in the web app.
             if selected != nil {
                 selected = nil
                 delegate?.readerDeselected(self)
             }
             return
         }
-        let key = WordKey(paragraphId: hit.paragraphId, wordIndex: word)
-        revealed.insert(key)
+        revealed.insert(WordKey(paragraphId: hit.paragraphId, wordIndex: word))
         selected = (hit.paragraphId, word)
         delegate?.reader(self, selected: hit.paragraphId, wordIndex: word)
     }
 
     /// Storage offset under a view point on a visible page, clamped to the page.
-    private func offset(at viewPoint: CGPoint) -> Int? {
+    func offset(at viewPoint: CGPoint) -> Int? {
         guard let (column, point) = locate(viewPoint) ?? nearestColumnPoint(viewPoint) else { return nil }
         _ = column
         let x = min(max(point.x, 0), columnWidth)
         return text.characterOffset(at: CGPoint(x: x, y: point.y))
     }
 
-    private func nearestColumnPoint(_ viewPoint: CGPoint) -> (Int, CGPoint)? {
+    func nearestColumnPoint(_ viewPoint: CGPoint) -> (Int, CGPoint)? {
         for column in (0..<columns).reversed() {
             let index = spreadStart + column
             guard index < text.pages.count, viewPoint.x >= columnX(column) - columnGap / 2 || column == 0 else { continue }
@@ -588,22 +542,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         return (text.storage.string as NSString).substring(with: range).replacingOccurrences(of: "\u{2028}", with: "\n")
     }
 
-    @objc func copy(_ sender: Any?) {
-        guard let s = selectedText else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(s, forType: .string)
-    }
-
-    func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        item.action == #selector(copy(_:)) ? selectedText != nil : true
-    }
-
-    @objc private func lookUpSelection(_ sender: NSMenuItem) {
-        guard let range = textSelection, let point = sender.representedObject as? CGPoint else { return }
-        showDefinition(for: text.storage.attributedSubstring(from: range), at: point)
-    }
-
-    private func visibleControlRects() -> [(Int, CGRect)] {
+    func visibleControlRects() -> [(Int, CGRect)] {
         var out: [(Int, CGRect)] = []
         for column in 0..<columns {
             let index = spreadStart + column
@@ -616,95 +555,16 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         return out
     }
 
-    private var controlSignature: [CGRect] = []
-
-    /// The paragraph buttons are drawn, not views: give them a pointer and a tooltip.
-    override func resetCursorRects() {
-        super.resetCursorRects()
-        removeAllToolTips()
-        for (_, rect) in visibleControlRects() {
-            addCursorRect(rect, cursor: .pointingHand)
-            addToolTip(rect, owner: self, userData: nil)
-        }
-    }
-
-    @objc func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData: UnsafeMutableRawPointer?) -> String {
-        guard let (pid, _) = visibleControlRects().first(where: { $0.1.contains(point) }) else { return "" }
-        if delegate?.readerTranslationProgress(self, paragraphId: pid) != nil { return "Translating…" }
-        return delegate?.readerCanTranslate(self) ?? true
-            ? "Translate paragraph (⌘-click to translate without the cache)" : "Waiting for chapter summaries…"
-    }
-
-    override func menu(for event: NSEvent) -> NSMenu? {
-        let point = convert(event.locationInWindow, from: nil)
-        if let selected = selectedText {
-            let menu = NSMenu()
-            let short = selected.count > 24 ? String(selected.prefix(24)) + "…" : selected
-            menu.addItem(withTitle: "Look Up “\(short)”", action: #selector(lookUpSelection(_:)), keyEquivalent: "")
-                .representedObject = point
-            menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
-            for item in menu.items { item.target = self }
-            return menu
-        }
-        guard let hit = hit(point) else { return nil }
-        let menu = NSMenu()
-        if let w = hit.wordIndex, let p = text.paragraphs[hit.paragraphId], w < p.words.count {
-            let word = p.words[w]
-            let surface = (p.text as NSString).substring(with: NSRange(location: word.start, length: word.len))
-            menu.addItem(withTitle: "Look Up “\(surface)”", action: #selector(lookUpMenu(_:)), keyEquivalent: "")
-                .representedObject = LookUp(paragraphId: hit.paragraphId, wordIndex: w, point: point)
-            menu.addItem(withTitle: "Copy “\(surface)”", action: #selector(copyString(_:)), keyEquivalent: "")
-                .representedObject = surface
-        }
-        if let p = text.paragraphs[hit.paragraphId] {
-            menu.addItem(withTitle: "Copy Paragraph", action: #selector(copyString(_:)), keyEquivalent: "")
-                .representedObject = p.text.replacingOccurrences(of: "\u{2028}", with: "\n")
-            menu.addItem(.separator())
-            let title = p.translated ? "Retranslate Paragraph" : "Translate Paragraph"
-            menu.addItem(withTitle: title, action: #selector(translateMenu(_:)), keyEquivalent: "")
-                .representedObject = (hit.paragraphId, !p.translated)
-        }
-        for item in menu.items { item.target = self }
-        return menu
-    }
-
-    private struct LookUp {
-        let paragraphId: Int
-        let wordIndex: Int
-        let point: CGPoint
-    }
-
-    @objc private func lookUpMenu(_ sender: NSMenuItem) {
-        guard let lookUp = sender.representedObject as? LookUp,
-            let range = text.wordRange(paragraphId: lookUp.paragraphId, wordIndex: lookUp.wordIndex)
-        else { return }
-        let attributed = text.storage.attributedSubstring(from: range)
-        showDefinition(for: attributed, at: lookUp.point)
-    }
-
-    @objc private func copyString(_ sender: NSMenuItem) {
-        guard let s = sender.representedObject as? String else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(s, forType: .string)
-    }
-
-    @objc private func translateMenu(_ sender: NSMenuItem) {
-        guard let (pid, useCache) = sender.representedObject as? (Int, Bool) else { return }
-        delegate?.reader(self, translate: pid, useCache: useCache)
-    }
+    var controlSignature: [CGRect] = []
 
     // MARK: Accessibility
 
-    override func isAccessibilityElement() -> Bool { true }
-    override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
-    override func accessibilityRoleDescription() -> String? { "book page" }
-
-    override func accessibilityLabel() -> String? {
+    var pageLabel: String {
         isProvisional ? "Page" : "Pages \(firstVisiblePage + 1) to \(min(spreadStart + columns, text.pages.count)) of \(text.pages.count)"
     }
 
     /// The text on the visible pages, so VoiceOver can read the spread.
-    override func accessibilityValue() -> Any? {
+    var visibleText: String? {
         guard !text.pages.isEmpty else { return nil }
         let first = text.pages[firstVisiblePage]
         let last = text.pages[min(spreadStart + columns, text.pages.count) - 1]
@@ -718,16 +578,6 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
             .replacingOccurrences(of: "\u{2028}", with: "\n")
     }
 
-    override func accessibilityPerformIncrement() -> Bool {
-        nextSpread()
-        return true
-    }
-
-    override func accessibilityPerformDecrement() -> Bool {
-        previousSpread()
-        return true
-    }
-
     // MARK: Paging
 
     func go(toPage page: Int, animated: Bool = true) {
@@ -737,7 +587,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         let phase = ((spreadStart % columns) + columns) % columns
         let target = clamped - (((clamped - phase) % columns) + columns) % columns
         guard target != spreadStart else { return }
-        if animated, !AppDefaults.animationsOff, let layer {
+        if animated, !AppDefaults.animationsOff, let layer = flipLayer {
             let transition = CATransition()
             transition.type = .push
             transition.subtype = target > spreadStart ? .fromRight : .fromLeft
@@ -748,61 +598,17 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         spreadStart = target
         textSelection = nil
         sticky = currentAnchor()
-        needsDisplay = true
+        redraw()
         delegate?.reader(self, movedTo: firstVisiblePage, of: text.pages.count)
-        NSAccessibility.post(element: self, notification: .valueChanged)
+        pageChanged()
     }
 
     func nextSpread() { go(toPage: spreadStart + columns) }
     func previousSpread() { go(toPage: spreadStart - columns) }
 
-    override func keyDown(with event: NSEvent) {
-        switch event.specialKey {
-        case .rightArrow?, .pageDown?, .downArrow?: nextSpread()
-        case .leftArrow?, .pageUp?, .upArrow?: previousSpread()
-        case .home?: go(toPage: 0)
-        case .end?: go(toPage: text.pages.count - 1)
-        default:
-            let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
-            if key == " " {
-                event.modifierFlags.contains(.shift) ? previousSpread() : nextSpread()
-            } else if event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
-                delegate?.readerToggle(self, key: key) == true
-            {
-                return
-            } else {
-                super.keyDown(with: event)
-            }
-        }
-    }
-
-    private var lastWheelFlip: TimeInterval = 0
+    var lastWheelFlip: TimeInterval = 0
     /// This swipe has turned its spread; the rest of it, and its glide, do nothing.
-    private var swipeConsumed = false
-
-    override func scrollWheel(with event: NSEvent) {
-        // A wheel, or a device that reports no gesture phases: one spread per burst.
-        guard event.hasPreciseScrollingDeltas, !(event.phase.isEmpty && event.momentumPhase.isEmpty) else {
-            guard event.timestamp - lastWheelFlip > 0.25 else { return }
-            lastWheelFlip = event.timestamp
-            if event.scrollingDeltaY < 0 || event.scrollingDeltaX < 0 { nextSpread() } else { previousSpread() }
-            return
-        }
-        if event.phase == .began {
-            swipeAccumulator = 0
-            swipeConsumed = false
-        }
-        guard !swipeConsumed else { return }
-        let delta = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) ? event.scrollingDeltaX : event.scrollingDeltaY
-        swipeAccumulator += delta
-        if swipeAccumulator < -60 {
-            swipeConsumed = true
-            nextSpread()
-        } else if swipeAccumulator > 60 {
-            swipeConsumed = true
-            previousSpread()
-        }
-    }
+    var swipeConsumed = false
 
     /// Shows the page holding a paragraph (e.g. one selected elsewhere).
     func reveal(paragraphId: Int) {
@@ -814,21 +620,5 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
 extension ChapterTextLayout {
     func firstLineTop(of paragraphId: Int) -> CGFloat? {
         firstLineOfParagraph[paragraphId].map { lines[$0].top }
-    }
-}
-
-extension NSImage {
-    func tinted(_ color: NSColor) -> NSImage {
-        let image = NSImage(size: size, flipped: false) { rect in
-            self.draw(in: rect)
-            // Source-in replaces the symbol's colour (keeping its shape) with the
-            // tint, alpha included; source-atop would blend a translucent tint
-            // over the black template and leave it near black.
-            color.set()
-            rect.fill(using: .sourceIn)
-            return true
-        }
-        image.isTemplate = false
-        return image
     }
 }

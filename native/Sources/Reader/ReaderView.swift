@@ -1,4 +1,8 @@
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import SwiftUI
 
 /// Commands the toolbar and menus send to the reader canvas.
@@ -20,10 +24,23 @@ final class ReaderControls {
     func next() { canvas?.nextSpread() }
     func previous() { canvas?.previousSpread() }
     func first() { canvas?.go(toPage: 0) }
-    func focus() { canvas?.window?.makeFirstResponder(canvas) }
+    func focus() { canvas?.takeKeys() }
 }
 
-struct ReaderView: NSViewRepresentable {
+#if os(macOS)
+extension ReaderView: NSViewRepresentable {
+    func makeNSView(context: Context) -> ReaderCanvas { makeCanvas(context.coordinator) }
+    func updateNSView(_ canvas: ReaderCanvas, context: Context) { update(canvas, context.coordinator) }
+}
+#else
+extension ReaderView: UIViewRepresentable {
+    func makeUIView(context: Context) -> ReaderCanvas { makeCanvas(context.coordinator) }
+    func updateUIView(_ canvas: ReaderCanvas, context: Context) { update(canvas, context.coordinator) }
+}
+#endif
+
+@MainActor
+struct ReaderView {
     let book: BookStore
     let chapter: ChapterStore
     let word: WordStore
@@ -31,21 +48,21 @@ struct ReaderView: NSViewRepresentable {
     let controls: ReaderControls
     let typography: ReaderTypography
     let model: String
-    /// Read by the caller's body so SwiftUI re-runs `updateNSView` on changes.
+    /// Read by the caller's body so SwiftUI updates the canvas on changes.
     let revision: Int
     let activityEntries: [TranslationActivityStore.Key: TranslationActivity]
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> ReaderCanvas {
+    func makeCanvas(_ coordinator: Coordinator) -> ReaderCanvas {
         let canvas = ReaderCanvas(frame: .zero)
-        canvas.delegate = context.coordinator
+        canvas.delegate = coordinator
         controls.canvas = canvas
         return canvas
     }
 
-    func updateNSView(_ canvas: ReaderCanvas, context: Context) {
-        let c = context.coordinator
+    func update(_ canvas: ReaderCanvas, _ coordinator: Coordinator) {
+        let c = coordinator
         c.parent = self
         controls.canvas = canvas
         canvas.setTypography(typography)
@@ -67,7 +84,7 @@ struct ReaderView: NSViewRepresentable {
             canvas.selected = nil
             canvas.setContent(
                 order: chapter.paragraphIds, paragraphs: chapter.paragraphs, typography: typography, anchor: anchor)
-            DispatchQueue.main.async { canvas.window?.makeFirstResponder(canvas) }
+            DispatchQueue.main.async { canvas.takeKeys() }
         } else if c.revision != chapter.revision {
             c.revision = chapter.revision
             if canvas.contentOrder == chapter.paragraphIds {

@@ -1,4 +1,8 @@
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 
 extension NSAttributedString.Key {
     static let fltsParagraph = NSAttributedString.Key("flts.paragraph")
@@ -17,21 +21,37 @@ struct ReaderTypography: Equatable {
 
     var lineHeight: CGFloat { (fontSize * lineHeightMultiple).rounded() }
 
-    func baseFont() -> NSFont {
-        let system = NSFont.systemFont(ofSize: fontSize)
-        let serif = system.fontDescriptor.withDesign(.serif) ?? system.fontDescriptor
-        return NSFont(descriptor: serif, size: fontSize) ?? system
+    func baseFont() -> PlatformFont {
+        let system = PlatformFont.systemFont(ofSize: fontSize)
+        guard let serif = system.fontDescriptor.withDesign(.serif) else { return system }
+        return Self.font(serif, size: fontSize) ?? system
     }
 
-    func font(marks: Int) -> NSFont {
+    func font(marks: Int) -> PlatformFont {
         let base = baseFont()
-        var traits: NSFontDescriptor.SymbolicTraits = []
+        guard marks & 3 != 0 else { return base }
+        #if os(macOS)
+        var traits = base.fontDescriptor.symbolicTraits
         if marks & 1 != 0 { traits.insert(.italic) }
         if marks & 2 != 0 { traits.insert(.bold) }
-        guard !traits.isEmpty else { return base }
-        let descriptor = base.fontDescriptor.withSymbolicTraits(base.fontDescriptor.symbolicTraits.union(traits))
-        return NSFont(descriptor: descriptor, size: fontSize) ?? base
+        return Self.font(base.fontDescriptor.withSymbolicTraits(traits), size: fontSize) ?? base
+        #else
+        var traits = base.fontDescriptor.symbolicTraits
+        if marks & 1 != 0 { traits.insert(.traitItalic) }
+        if marks & 2 != 0 { traits.insert(.traitBold) }
+        return base.fontDescriptor.withSymbolicTraits(traits).flatMap { Self.font($0, size: fontSize) } ?? base
+        #endif
     }
+
+    #if os(macOS)
+    private static func font(_ descriptor: NSFontDescriptor, size: CGFloat) -> NSFont? {
+        NSFont(descriptor: descriptor, size: size)
+    }
+    #else
+    private static func font(_ descriptor: UIFontDescriptor, size: CGFloat) -> UIFont? {
+        UIFont(descriptor: descriptor, size: size)
+    }
+    #endif
 
     func paragraphStyle() -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
@@ -44,8 +64,8 @@ struct ReaderTypography: Equatable {
         return style
     }
 
-    var translationFont: NSFont {
-        NSFont.systemFont(ofSize: (fontSize * 0.55).rounded(.down))
+    var translationFont: PlatformFont {
+        PlatformFont.systemFont(ofSize: (fontSize * 0.55).rounded(.down))
     }
 }
 
@@ -141,7 +161,7 @@ final class ChapterTextLayout: @unchecked Sendable {
     }
 
     private var cachedBase: [NSAttributedString.Key: Any] = [:]
-    private var cachedFonts: [Int: NSFont] = [:]
+    private var cachedFonts: [Int: PlatformFont] = [:]
     private var cachedFor: ReaderTypography?
 
     private func baseAttributes() -> [NSAttributedString.Key: Any] {
@@ -150,7 +170,7 @@ final class ChapterTextLayout: @unchecked Sendable {
             cachedFonts = [:]
             cachedBase = [
                 .font: typography.baseFont(), .paragraphStyle: typography.paragraphStyle(),
-                .foregroundColor: NSColor.textColor,
+                .foregroundColor: PlatformColor.readerText,
             ]
             if let language = typography.language {
                 cachedBase[NSAttributedString.Key(kCTLanguageAttributeName as String)] = language
@@ -159,7 +179,7 @@ final class ChapterTextLayout: @unchecked Sendable {
         return cachedBase
     }
 
-    private func font(marks: Int) -> NSFont {
+    private func font(marks: Int) -> PlatformFont {
         if let f = cachedFonts[marks] { return f }
         let f = typography.font(marks: marks)
         cachedFonts[marks] = f
@@ -169,7 +189,7 @@ final class ChapterTextLayout: @unchecked Sendable {
     private func attributed(_ p: ParagraphText) -> NSAttributedString {
         var attrs = baseAttributes()
         attrs[.fltsParagraph] = p.id
-        if !p.translated { attrs[.foregroundColor] = NSColor.secondaryLabelColor }
+        if !p.translated { attrs[.foregroundColor] = PlatformColor.readerSecondary }
         let s = NSMutableAttributedString(string: p.text, attributes: attrs)
         let length = s.length
         for run in p.runs where run.start + run.len <= length {

@@ -1,6 +1,7 @@
 #!/bin/bash
 # Builds the Rust core as a static library and regenerates its Swift bindings.
-# Usage: build-core.sh [debug|release|release-ship]
+# Usage: build-core.sh [debug|release|release-ship] [macos|ios|ios-sim]
+# The bindings are the same on every platform and come from the macOS build.
 set -euo pipefail
 
 # Xcode exports hundreds of build settings (linker, strip, SDK, deployment
@@ -8,6 +9,7 @@ set -euo pipefail
 if [ -z "${FLTS_CLEAN_ENV:-}" ]; then
   exec /usr/bin/env -i FLTS_CLEAN_ENV=1 HOME="$HOME" USER="${USER:-}" TMPDIR="${TMPDIR:-/tmp}" \
     FLTS_CORE_PROFILE="${FLTS_CORE_PROFILE:-}" FLTS_MACOS_MIN="${FLTS_MACOS_MIN:-}" \
+    FLTS_IOS_MIN="${FLTS_IOS_MIN:-}" \
     /bin/bash "$0" "$@"
 fi
 
@@ -17,22 +19,31 @@ export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/us
 export MACOSX_DEPLOYMENT_TARGET="${FLTS_MACOS_MIN:-15.0}"
 [ -n "${FLTS_CORE_PROFILE}" ] || unset FLTS_CORE_PROFILE
 
+PLATFORM="${2:-macos}"
+case "$PLATFORM" in
+  macos) TARGET_ARGS=() TARGET_DIR="target" LIB_OUT="$ROOT/native/build/core" ;;
+  ios) TARGET_ARGS=(--target aarch64-apple-ios) TARGET_DIR="target/aarch64-apple-ios" LIB_OUT="$ROOT/native/build/core-ios" ;;
+  ios-sim) TARGET_ARGS=(--target aarch64-apple-ios-sim) TARGET_DIR="target/aarch64-apple-ios-sim" LIB_OUT="$ROOT/native/build/core-ios-sim" ;;
+  *) echo "unknown platform: $PLATFORM" >&2; exit 2 ;;
+esac
+export IPHONEOS_DEPLOYMENT_TARGET="${FLTS_IOS_MIN:-18.0}"
+
 cd "$ROOT"
 if [ "$PROFILE" = "debug" ]; then
-  cargo build -p flts-ffi --lib
-  DIR="target/debug"
+  cargo build -p flts-ffi --lib ${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"}
+  DIR="$TARGET_DIR/debug"
 else
-  cargo build -p flts-ffi --lib --profile "$PROFILE"
-  DIR="target/$PROFILE"
+  cargo build -p flts-ffi --lib --profile "$PROFILE" ${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"}
+  DIR="$TARGET_DIR/$PROFILE"
 fi
 
-LIB_OUT="$ROOT/native/build/core"
 GEN_OUT="$ROOT/native/Generated"
 mkdir -p "$LIB_OUT" "$GEN_OUT"
 # Only replace when changed so Xcode does not relink needlessly.
 if ! cmp -s "$DIR/libflts_ffi.a" "$LIB_OUT/libflts_ffi.a"; then
   cp "$DIR/libflts_ffi.a" "$LIB_OUT/libflts_ffi.a"
 fi
+[ "$PLATFORM" = "macos" ] || exit 0
 
 cargo build -p flts-ffi --features bindgen --bin uniffi-bindgen-swift
 TMP="$(mktemp -d)"

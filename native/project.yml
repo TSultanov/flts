@@ -73,6 +73,51 @@ targets:
         FLTS_DISABLE_SYNC: "1"
         FLTS_KEYRING_SERVICE: FLTS-Spotify-dev
         RUST_BACKTRACE: "1"
+  FLTS-iOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: Sources
+        excludes: ["Views/**", "Reader/**", "App/**", "Platform/**"]
+      - path: Generated/flts_ffi.swift
+      - path: iOS
+    info:
+      path: iOS/Info.plist
+      properties:
+        CFBundleDisplayName: FLTS
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSCameraUsageDescription: FLTS uses the camera to scan another device's pairing QR code.
+        NSLocalNetworkUsageDescription: FLTS syncs your library with your other devices on the local network.
+    settings:
+      base:
+        PRODUCT_NAME: FLTS
+        PRODUCT_BUNDLE_IDENTIFIER: com.TS.FLTS
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_INCLUDE_PATHS: $(PROJECT_DIR)/Generated
+        "LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]": $(PROJECT_DIR)/build/core-ios-sim
+        "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]": $(PROJECT_DIR)/build/core-ios
+        OTHER_LDFLAGS: -lflts_ffi -lresolv -framework SystemConfiguration -framework Security
+        DEAD_CODE_STRIPPING: true
+    preBuildScripts:
+      - name: Build Rust core
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ "$CONFIGURATION" = "Release" ]; then PROFILE=release-ship; else PROFILE=debug; fi
+          if [ "$PLATFORM_NAME" = "iphonesimulator" ]; then CORE=ios-sim; else CORE=ios; fi
+          "$PROJECT_DIR/scripts/build-core.sh" "$PROFILE" "$CORE"
+    scheme: {}
   FLTSTests:
     type: bundle.unit-test
     platform: macOS
