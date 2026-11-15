@@ -199,6 +199,16 @@ struct OnboardingView: View {
             }
             .formStyle(.grouped)
             .frame(maxWidth: 520, maxHeight: 360)
+            Button("Continue") {
+                // Fields save on Return or losing focus; ending editing commits the last one.
+                NSApp.keyWindow?.makeFirstResponder(nil)
+            }
+            .keyboardShortcut(.defaultAction)
+            .controlSize(.large)
+            .disabled(model.config.config?.targetLanguageId.isEmpty ?? true)
+            Text("You can change these later in Settings (⌘,).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

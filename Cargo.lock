@@ -1907,6 +1907,7 @@ name = "flts-ffi"
 version = "0.1.0"
 dependencies = [
  "app-core",
+ "isolang",
  "library",
  "log",
  "oslog",

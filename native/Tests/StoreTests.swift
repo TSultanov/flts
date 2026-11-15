@@ -645,6 +645,21 @@ extension NSView {
 
         let text = try String(contentsOfFile: textFile, encoding: .utf8)
         let bookId = try await model.library.importText(title: "Traducir", text: text, sourceLanguageId: "spa")
+
+        // The real window, reading this book while it translates.
+        model.selectedBookId = bookId
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1300, height: 820), styleMask: [.titled, .resizable],
+            backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: .aqua)
+        let host = NSHostingView(rootView: RootView().environment(model))
+        window.contentView = host
+        var canvas: ReaderCanvas?
+        for _ in 0..<100 where canvas == nil || canvas?.pageCount == 0 {
+            try await Task.sleep(for: .milliseconds(50))
+            canvas = host.firstDescendant(of: ReaderCanvas.self)
+        }
+        let reader = try #require(canvas)
         let book = BookStore(bookId: bookId, core: core, events: model.events)
         await book.load()
         let chapter = ChapterStore(bookId: bookId, chapterId: 0, core: core, events: model.events)
@@ -654,9 +669,27 @@ extension NSView {
         let fetchesBefore = core.count("getParagraphTexts")
 
         await book.translateChapter(0, model: model.config.config?.model ?? "")
+        var shotMid = false
         for _ in 0..<600 where chapter.untranslatedCount > 0 {
+            try await Task.sleep(for: .milliseconds(20))
+            if !shotMid, !model.activity.entries.isEmpty, let out = env["FLTS_SNAPSHOT_DIR"] {
+                shotMid = true
+                let rep = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                host.cacheDisplay(in: host.bounds, to: rep)
+                try rep.representation(using: .png, properties: [:])?.write(
+                    to: URL(fileURLWithPath: out).appendingPathComponent("translating.png"))
+            }
+        }
+        // The open reader caught every update, not just the store.
+        for _ in 0..<100 {
+            if chapter.paragraphIds.allSatisfy({ reader.contentParagraph($0)?.translated == true }) && !reader.isProvisional {
+                break
+            }
             try await Task.sleep(for: .milliseconds(50))
         }
+        try await Task.sleep(for: .milliseconds(300))
+        let missing = chapter.paragraphIds.filter { reader.text.paragraphs[$0]?.translated != true }
+        #expect(missing.isEmpty, "reader text still untranslated: \(missing)")
         #expect(chapter.untranslatedCount == 0, "only events can have updated the store")
         try await Task.sleep(for: .milliseconds(500))
         let fetches = core.count("getParagraphTexts") - fetchesBefore
@@ -867,5 +900,40 @@ extension NSView {
         let started = canvas.fullLayoutsStarted - startedBefore
         print("CREEP full layouts started: \(started)")
         #expect(started <= 3, "full layouts should wait for relayouts to settle")
+    }
+}
+
+@MainActor
+@Suite struct ReaderUpdateStreamTests {
+    /// A steady stream of updates (a chapter translating) during the
+    /// provisional layout must not keep the full layout from landing, and
+    /// every update must end up in the text.
+    @Test func fullLayoutLandsUnderAStreamOfUpdates() async throws {
+        var paragraphs: [Int: ParagraphText] = [:]
+        for id in 0..<200 {
+            let text = Array(repeating: "palabra", count: 30 + id % 50).joined(separator: " ")
+            paragraphs[id] = ParagraphText(id: id, text: text, runs: [], words: [], translated: false)
+        }
+        let canvas = ReaderCanvas(frame: NSRect(x: 0, y: 0, width: 1280, height: 800))
+        canvas.setContent(order: Array(0..<200), paragraphs: paragraphs, typography: ReaderTypography(), anchor: ReadingAnchor(paragraphId: 150, pageOffset: 0))
+        canvas.layout()
+        #expect(canvas.isProvisional)
+        var landedDuringStream = false
+        for round in 0..<40 {
+            let id = round * 5
+            let p = paragraphs[id]!
+            canvas.replace([ParagraphText(id: id, text: p.text + " fin", runs: [], words: [], translated: true)])
+            try await Task.sleep(for: .milliseconds(50))
+            if !canvas.isProvisional { landedDuringStream = true }
+        }
+        #expect(landedDuringStream, "full layout never landed while updates streamed")
+        for _ in 0..<100 where canvas.isProvisional { try await Task.sleep(for: .milliseconds(20)) }
+        try await Task.sleep(for: .milliseconds(200))
+        for round in 0..<40 {
+            let id = round * 5
+            #expect(canvas.text.paragraphs[id]?.translated == true, "paragraph \(id) not applied")
+            let range = try #require(canvas.text.ranges[id])
+            #expect((canvas.text.storage.string as NSString).substring(with: range).hasSuffix(" fin"))
+        }
     }
 }

@@ -31,6 +31,7 @@ targets:
         CFBundleDisplayName: FLTS
         LSApplicationCategoryType: public.app-category.education
         NSAppleEventsUsageDescription: FLTS reads what Spotify is playing to show translated lyrics.
+        NSLocalNetworkUsageDescription: FLTS syncs your library with your other devices on the local network.
         NSHumanReadableCopyright: ""
         CFBundleDocumentTypes:
           - CFBundleTypeName: EPUB book

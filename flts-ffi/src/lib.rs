@@ -610,6 +610,156 @@ mod tests {
         );
     }
 
+    /// Every core value the app reads converts into its record; a renamed
+    /// field fails here rather than as a silent `try?` in Swift.
+    #[test]
+    fn core_values_convert_into_their_records() {
+        use app_core::app::{
+            anki_sync, lyrics as ly, spotify::cdp, spotify::web, sync_daemon,
+            translation_queue as tq,
+        };
+        let id = Uuid::new_v4();
+
+        let _: SyncStatus = transcode(sync_daemon::SyncStatus::default()).unwrap();
+        let _: StoreIssues = transcode(sync_daemon::StoreIssues::default()).unwrap();
+        let _: AnkiSyncStatus = transcode(anki_sync::AnkiSyncStatus::default()).unwrap();
+        let _: ThisDevice = transcode(sync::ThisDevice {
+            device_id: "D".into(),
+            name: None,
+        })
+        .unwrap();
+        let _: DeviceEntry = transcode(sync::DeviceEntry {
+            device_id: "D".into(),
+            name: "n".into(),
+            connected: true,
+        })
+        .unwrap();
+        let _: PendingDevice = transcode(sync::PendingEntry {
+            device_id: "D".into(),
+            name: "n".into(),
+        })
+        .unwrap();
+        let _: Vec<LanguageInfo> = transcode(config::get_languages()).unwrap();
+        let _: Vec<ProviderMeta> = transcode(config::get_translation_providers()).unwrap();
+        let _: ActiveTranslation = transcode(tq::ActiveParagraphTranslation {
+            book_id: id,
+            paragraph_id: 1,
+            activity: tq::ParagraphTranslationActivity {
+                request_id: 2,
+                progress_chars: 3,
+                expected_chars: 4,
+            },
+        })
+        .unwrap();
+        let _: BookSummaryStatus = transcode(lv::BookSummaryStatusView {
+            total_chapters: 2,
+            generated: vec![true, false],
+            actively_generating: Some(1),
+        })
+        .unwrap();
+
+        let track = web::TrackMeta {
+            id: "t".into(),
+            name: "n".into(),
+            artist: "a".into(),
+            album: None,
+            duration_ms: 1000,
+        };
+        let _: TrackMeta = transcode(track.clone()).unwrap();
+        let _: QueueSnapshot = transcode(web::QueueSnapshot {
+            context_type: Some("album".into()),
+            currently_playing_id: Some("t".into()),
+            upcoming: vec![track],
+        })
+        .unwrap();
+        let _: SpotifyWebStatus = transcode(web::SpotifyWebStatus {
+            connected: true,
+            premium_required: false,
+            last_error: None,
+        })
+        .unwrap();
+        let _: SpotifyCdpStatus = transcode(cdp::SpotifyCdpStatus {
+            available: false,
+            port: 9222,
+            hint: None,
+        })
+        .unwrap();
+        let _: SpotifyLoginAgentStatus = transcode(cdp::SpotifyLoginAgentStatus {
+            installed: false,
+            path: "/p".into(),
+        })
+        .unwrap();
+
+        let lyrics = library::lyrics::Lyrics {
+            track_id: "t".into(),
+            lines: vec![library::lyrics::LyricsLine {
+                time_ms: Some(10),
+                text: "uno".into(),
+            }],
+            synced: true,
+        };
+        let translation = library::lyrics::LyricsTranslation {
+            track_id: "t".into(),
+            target_lang: isolang::Language::Eng,
+            model: "m".into(),
+            lines: vec![library::lyrics::LyricsLineTranslation {
+                translation: "one".into(),
+                glosses: vec![library::lyrics::Gloss {
+                    fragment: "u".into(),
+                    gloss: "o".into(),
+                    note: String::new(),
+                }],
+            }],
+        };
+        let state: TrackLyricsState = transcode(ly::TrackLyricsState {
+            lyrics: Some(lyrics.clone()),
+            translation: Some(translation.clone()),
+        })
+        .unwrap();
+        assert_eq!(state.translation.unwrap().target_lang, "eng");
+        let wire = |name: &str, v: serde_json::Value| CoreEvent::from_wire(name, v).unwrap();
+        wire(
+            "lyrics_resolved",
+            serde_json::to_value(ly::LyricsResolved {
+                track_id: "t".into(),
+                lyrics: Some(lyrics),
+            })
+            .unwrap(),
+        );
+        wire(
+            "lyrics_translation_done",
+            serde_json::to_value(ly::LyricsTranslationDone {
+                track_id: "t".into(),
+                translation,
+            })
+            .unwrap(),
+        );
+        wire(
+            "lyrics_translation_progress",
+            serde_json::to_value(ly::LyricsTranslationProgress {
+                track_id: "t".into(),
+                bytes: 5,
+            })
+            .unwrap(),
+        );
+        wire(
+            "lyrics_translation_error",
+            serde_json::to_value(ly::LyricsTranslationError {
+                track_id: "t".into(),
+                error: "e".into(),
+            })
+            .unwrap(),
+        );
+        #[cfg(target_os = "macos")]
+        {
+            let np = app_core::app::spotify::applescript::NowPlaying::empty(
+                app_core::app::spotify::applescript::PlayerState::NotRunning,
+            );
+            let _: NowPlaying = transcode(&np).unwrap();
+            wire("spotify_state", serde_json::to_value(np).unwrap());
+        }
+    }
+
     #[test]
     fn config_round_trips_through_the_core_type() {
         let json = serde_json::json!({

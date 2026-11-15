@@ -64,8 +64,14 @@ struct ReaderView: NSViewRepresentable {
             DispatchQueue.main.async { canvas.window?.makeFirstResponder(canvas) }
         } else if c.revision != chapter.revision {
             c.revision = chapter.revision
-            if let ids = chapter.changedIds, canvas.contentOrder == chapter.paragraphIds {
-                canvas.replace(ids.compactMap { chapter.paragraphs[$0] })
+            if canvas.contentOrder == chapter.paragraphIds {
+                // Diff rather than trust `changedIds`: several store revisions
+                // can land between two updates of this view.
+                let changed = chapter.paragraphIds.compactMap { id -> ParagraphText? in
+                    guard let p = chapter.paragraphs[id], p != canvas.contentParagraph(id) else { return nil }
+                    return p
+                }
+                if !changed.isEmpty { canvas.replace(changed) }
             } else {
                 let anchor = canvas.currentAnchor()
                 canvas.setContent(

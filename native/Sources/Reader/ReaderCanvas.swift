@@ -115,12 +115,9 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
             paragraphs[p.id] = p
             pendingChanges[p.id] = p
         }
-        if isProvisional {
-            // The background layout predates these; redo both.
-            pendingChanges = [:]
-            relayout(keeping: sticky ?? currentAnchor())
-            return
-        }
+        // During the provisional layout they wait for the full one (restarting
+        // it on every change could keep it from ever landing).
+        guard !isProvisional else { return }
         scheduleDrain()
     }
 
@@ -134,10 +131,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
 
     private func drainChanges() {
         drainScheduled = false
-        guard !isProvisional else {
-            pendingChanges = [:]
-            return
-        }
+        guard !isProvisional else { return }
         let ids = pendingChanges.keys.sorted().prefix(Self.changesPerTurn)
         let batch = ids.compactMap { pendingChanges.removeValue(forKey: $0) }
         if !batch.isEmpty {
@@ -170,6 +164,9 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
 
     var pageCount: Int { text.pages.count }
     var contentOrder: [Int] { order }
+
+    /// The paragraph as the reader has it (including changes not yet laid out).
+    func contentParagraph(_ id: Int) -> ParagraphText? { paragraphs[id] }
 
     // MARK: Layout
 
@@ -269,6 +266,8 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         selected = selectedBefore
         needsDisplay = true
         delegate?.reader(self, movedTo: spreadStart, of: text.pages.count)
+        // Changes that arrived after this layout started.
+        if !pendingChanges.isEmpty { scheduleDrain() }
         onFullLayout?()
     }
 
@@ -382,7 +381,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
             if let progress = delegate?.readerTranslationProgress(self, paragraphId: pid) {
                 drawProgress(progress, in: rect)
             } else if let symbol = Self.translateSymbol {
-                let tinted = symbol.tinted(NSColor.tertiaryLabelColor)
+                let tinted = symbol.tinted(NSColor.secondaryLabelColor)
                 tinted.draw(in: rect.insetBy(dx: (rect.width - symbol.size.width) / 2, dy: (rect.height - symbol.size.height) / 2))
             }
         }
@@ -390,16 +389,16 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
 
     private func drawProgress(_ progress: Double, in rect: CGRect) {
         let ring = rect.insetBy(dx: 4, dy: 4)
-        NSColor.quaternaryLabelColor.setStroke()
+        NSColor.tertiaryLabelColor.setStroke()
         let track = NSBezierPath(ovalIn: ring)
-        track.lineWidth = 2
+        track.lineWidth = 2.5
         track.stroke()
         NSColor.controlAccentColor.setStroke()
         let arc = NSBezierPath()
         let center = CGPoint(x: ring.midX, y: ring.midY)
         let end = -90 + 360 * min(max(progress, 0.03), 1)
         arc.appendArc(withCenter: center, radius: ring.width / 2, startAngle: -90, endAngle: end, clockwise: false)
-        arc.lineWidth = 2
+        arc.lineWidth = 2.5
         arc.stroke()
     }
 

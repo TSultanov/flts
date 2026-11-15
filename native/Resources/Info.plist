@@ -41,5 +41,7 @@
 	<string>FLTS reads what Spotify is playing to show translated lyrics.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string></string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>FLTS syncs your library with your other devices on the local network.</string>
 </dict>
 </plist>

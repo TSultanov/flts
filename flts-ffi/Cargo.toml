@@ -15,6 +15,9 @@ required-features = ["bindgen"]
 [features]
 bindgen = ["uniffi/cli"]
 
+[dev-dependencies]
+isolang = { workspace = true }
+
 [dependencies]
 app-core = { path = "../app-core" }
 library = { path = "../library" }

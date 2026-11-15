@@ -91,7 +91,8 @@ struct TranslationSettings: View {
                     ForEach(store.providers) { Text($0.name).tag($0.id) }
                 }
                 CommitField(
-                    title: "API key", value: config.apiKey(for: config.translationProvider) ?? "", secure: true
+                    title: "API key", value: config.apiKey(for: config.translationProvider) ?? "", secure: true,
+                    prompt: "Paste your \(store.provider(config.translationProvider)?.name ?? "provider") API key"
                 ) { key in
                     let provider = config.translationProvider
                     Task { await store.update { $0.setApiKey(key, for: provider) } }

@@ -63,7 +63,7 @@ be short as a result.
 | ----------------------------------- | ------------------------------ | ----------------- |
 | Open at start, first paint          | 25 ms                          | < 150 ms          |
 | Restore ¾ deep, first paint         | 24 ms                          | < 150 ms          |
-| Full layout lands (background)      | ~320 ms, view unchanged        | —                 |
+| Full layout lands (background)      | ~480 ms, view unchanged        | —                 |
 | Flip, worst / median                | 15.6 / 3.6 ms                  | < 33 / < 17 ms    |
 | Tap a word                          | 3.7 ms                         | < 33 ms           |
 | Live resize step                    | 6.8 ms                         | < 33 ms           |
@@ -136,6 +136,14 @@ core and the Go Syncthing archive (`__TEXT` 26.7 vs 27.2 MB); WebKit is a system
 framework, so dropping it saves little. Release strips symbols, builds Swift
 with `-Osize` and exports nothing (`-exported_symbols_list /dev/null`), which
 took the export trie from 1.6 MB to 0.3 MB.
+
+## Fixtures
+
+`native/scripts/fixtures/seed-library.mjs <dir> [paragraphs]` seeds a config
+dir with a translated Spanish book (through the headless Tauri app's E2E bridge
+and the LLM sim); `sims-up.mjs` starts the sims with scripted translations for
+the translate smoke test. Both need `cargo build -p app -p e2e-sims --features
+app/e2e-bridge`.
 
 ## Not in v1
 
