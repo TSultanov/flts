@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -82,7 +83,23 @@ final class WordStore {
             word: word, sourceLang: info.sourceLanguage.isEmpty ? "en" : info.sourceLanguage,
             targetLang: targetLanguage.isEmpty ? "en" : targetLanguage)
         guard gen == generation else { return }
-        definition = def ?? nil
+        definition = (def ?? nil).map { SystemDefinition(definition: Self.readable($0.definition), transcription: $0.transcription) }
+    }
+
+    /// The system dictionary answers in HTML (the web app renders it); shown
+    /// here as its text.
+    static func readable(_ definition: String) -> String {
+        guard definition.contains("<"), let data = definition.data(using: .utf8),
+            let rich = try? NSAttributedString(
+                data: data,
+                options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue],
+                documentAttributes: nil)
+        else { return definition }
+        return rich.string
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
     }
 
     func createCard() async {

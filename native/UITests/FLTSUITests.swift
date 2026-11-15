@@ -158,11 +158,20 @@ final class FLTSScreenshotTour: XCTestCase {
         pause(0.5)
         shot(window, "real-1-reader")
         assertFlips(app, "in a real book")
-        page.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.3)).click()
-        pause(1)
+        // A translated word, wherever the page has one: its details open.
+        let details = app.buttons["Show word details"].firstMatch
+        var found = false
+        for step in 0..<24 where !found {
+            let point = CGVector(dx: step % 2 == 0 ? 0.12 : 0.62, dy: 0.09 + 0.035 * Double(step / 2))
+            page.coordinate(withNormalizedOffset: point).click()
+            found = until(1.2) { details.exists && details.isEnabled }
+        }
+        XCTAssertTrue(found, "no translated word could be opened on this spread")
         app.typeKey("w", modifierFlags: [])
+        XCTAssertTrue(app.buttons["Hide word details"].firstMatch.appears(timeout: 3), "the word's details did not open")
         pause(0.5)
         shot(window, "real-2-word")
+        app.typeKey("w", modifierFlags: [])
         if app.buttons["Chapters"].firstMatch.exists {
             app.typeKey("c", modifierFlags: [])
             XCTAssertTrue(app.outlines.firstMatch.appears(timeout: 3))

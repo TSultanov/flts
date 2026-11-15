@@ -625,6 +625,22 @@ extension NSView {
 }
 
 @MainActor
+@Suite struct DictionaryTextTests {
+    /// The system dictionary's HTML is shown as text, not as markup.
+    @Test func definitionMarkupBecomesText() {
+        let html = """
+            <?xml version="1.0" encoding="UTF-8"?><html><head><meta charset="UTF-8"/></head><body>
+            <d:entry xmlns:d="x" class="entry"><span class="hw">Wort </span><span class="ph">| vɔrt |</span>
+            <span class="gramb"><span class="ps">noun</span> <span class="trans">word</span></span></d:entry></body></html>
+            """
+        let text = WordStore.readable(html)
+        #expect(!text.contains("<") && !text.contains("class="))
+        #expect(text.contains("Wort") && text.contains("vɔrt") && text.contains("word"))
+        #expect(WordStore.readable("plain definition") == "plain definition")
+    }
+}
+
+@MainActor
 @Suite struct LyricsStoreTests {
     @Test func followsTrackAndTranslation() async throws {
         let core = FakeCore()
@@ -1128,6 +1144,48 @@ extension NSView {
             try rep.representation(using: .png, properties: [:])?.write(
                 to: URL(fileURLWithPath: dir).appendingPathComponent("gallery-\(name)-\(suffix).png"))
         }
+    }
+
+    /// The Lyrics window keeps the playing line in view: with a song under way
+    /// it opens scrolled to it, and scrolls on as the song plays.
+    @Test func lyricsFollowThePlayingLine() async throws {
+        let core = fake()
+        core.getTrackLyricsStateHandler = { _, _, _ in
+            TrackLyricsState(
+                lyrics: Lyrics(
+                    trackId: "t", lines: (0..<160).map { LyricsLine(timeMs: $0 * 400, text: "Línea \($0)") }, synced: true),
+                translation: nil)
+        }
+        let model = AppModel(core: core)
+        let host = NSHostingView(rootView: LyricsWindow().environment(model).frame(width: 520, height: 500))
+        let window = NSWindow(
+            contentRect: NSRect(x: -4000, y: -4000, width: 520, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.orderFrontRegardless()
+        defer { window.close() }
+
+        func offset() -> CGFloat? {
+            func find(_ view: NSView) -> NSScrollView? {
+                if let scroll = view as? NSScrollView, scroll.documentView.map({ $0.frame.height > 1000 }) == true { return scroll }
+                return view.subviews.lazy.compactMap(find).first
+            }
+            return find(host).map { $0.contentView.bounds.origin.y }
+        }
+        // The song is 12 s in (line 30): the list must not sit at the top.
+        var first: CGFloat = 0
+        for _ in 0..<60 {
+            try await Task.sleep(for: .milliseconds(100))
+            if let y = offset(), y > 200 {
+                first = y
+                break
+            }
+        }
+        #expect(first > 200, "the list did not scroll to the playing line")
+        // Four seconds on (ten lines), it has followed.
+        try await Task.sleep(for: .seconds(4))
+        let later = try #require(offset())
+        #expect(later > first + 100, "the list did not follow the song: \(first) → \(later)")
     }
 
     @Test func renderStates() async throws {
