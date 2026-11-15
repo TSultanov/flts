@@ -93,6 +93,7 @@ private struct EpubImport: View {
                 Button("Cancel", action: close).keyboardShortcut(.cancelAction)
                 Button("Import") { Task { await importBook() } }
                     .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("confirm-import")
                     .disabled(preview == nil || busy || chosen.isEmpty)
             }
         }
@@ -206,6 +207,7 @@ private struct TextImport: View {
                 Button("Cancel", action: close).keyboardShortcut(.cancelAction)
                 Button("Import") { Task { await importText() } }
                     .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("confirm-import")
                     .disabled(busy || title.trimmingCharacters(in: .whitespaces).isEmpty
                         || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }

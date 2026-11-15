@@ -46,6 +46,138 @@ final class FLTSiOSTour: XCTestCase {
         app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Page'")).firstMatch
     }
 
+    private func launch(dir: String, env: [String: String]) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment = [
+            "FLTS_CONFIG_DIR": dir, "FLTS_DISABLE_SYNC": "1", "FLTS_DISABLE_KEYRING": "1", "FLTS_NO_ANIMATIONS": "1",
+        ]
+        app.launchEnvironment.merge(env) { _, new in new }
+        app.launch()
+        return app
+    }
+
+    /// Translation end to end against the e2e sims (scripts/ios-ui-services.sh):
+    /// import a text, translate its chapter, read a word, translate the
+    /// paragraph again with a chosen model, add an Anki card; then move the
+    /// book into a folder and delete it.
+    func testTranslateWithSims() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let dir = env["FLTS_UITEST_SIM_DIR"], let textFile = env["FLTS_UITEST_SIM_TEXT"], let llm = env["FLTS_UITEST_SIM_LLM"],
+            !dir.isEmpty
+        else { throw XCTSkip("sims only") }
+        let paragraphs = try String(contentsOfFile: textFile, encoding: .utf8).components(separatedBy: "\n\n").prefix(2)
+        let app = launch(dir: dir, env: ["FLTS_GEMINI_BASE_URL": llm])
+        XCTAssertTrue(app.staticTexts["Lluvia en la ciudad"].firstMatch.appears(timeout: 30))
+
+        app.buttons["Import"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["Text"].firstMatch.appears(timeout: 5))
+        app.buttons["Text"].firstMatch.tap()
+        let title = app.textFields["Title"].firstMatch
+        XCTAssertTrue(title.appears(timeout: 5))
+        title.tap()
+        title.typeText("Texto de prueba")
+        let body = app.textViews.firstMatch
+        body.tap()
+        body.typeText(paragraphs.joined(separator: "\n\n"))
+        shot(app, "t-0-import-text")
+        // The Text pane's button; the EPUB pane keeps its own, hidden.
+        app.buttons.matching(identifier: "confirm-import").allElementsBoundByIndex.first(where: \.isHittable)?.tap()
+        let book = app.staticTexts["Texto de prueba"].firstMatch
+        XCTAssertTrue(book.appears(timeout: 15), "the text was not imported")
+        pause()
+        book.tap()
+        let page = page(app)
+        XCTAssertTrue(page.appears(timeout: 15))
+
+        let translate = app.buttons["Translate Chapter"].firstMatch
+        XCTAssertTrue(translate.appears(timeout: 5), "no Translate Chapter on an untranslated text")
+        XCTAssertTrue(until(10) { translate.isEnabled }, "Translate Chapter stayed disabled")
+        translate.tap()
+        XCTAssertTrue(until(40) { !translate.exists }, "the chapter was not translated")
+        shot(app, "t-1-translated")
+
+        let details = app.buttons["Show word details"].firstMatch
+        var found = false
+        for step in 0..<16 where !found {
+            page.coordinate(withNormalizedOffset: CGVector(dx: 0.25 + 0.1 * Double(step % 3), dy: 0.06 + 0.03 * Double(step / 3))).tap()
+            found = until(1.5) { details.exists && details.isEnabled }
+        }
+        XCTAssertTrue(found, "no translated word could be selected")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'en-'")).firstMatch.appears(timeout: 3),
+            "the word's translation is not shown")
+        details.tap()
+        let again = app.buttons["Translate Again"].firstMatch
+        XCTAssertTrue(again.appears(timeout: 5))
+        pause()
+        shot(app, "t-2-word")
+        again.tap()
+        XCTAssertTrue(until(30) { again.isEnabled }, "translating again never finished")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'en-'")).firstMatch.appears(timeout: 5))
+
+        let card = app.buttons["Add to Anki"].firstMatch
+        XCTAssertTrue(card.appears(timeout: 5), "no Add to Anki with Anki configured")
+        card.tap()
+        XCTAssertTrue(until(10) { !card.exists }, "the card was not created")
+        pause()
+        shot(app, "t-3-after")
+        app.buttons["Hide word details"].firstMatch.tap()
+        app.buttons["Library"].firstMatch.tap()
+
+        // Library actions from the long-press menu: move into a new folder, then delete.
+        XCTAssertTrue(book.appears(timeout: 10))
+        book.press(forDuration: 1.0)
+        let move = app.buttons["Move to Folder…"].firstMatch
+        XCTAssertTrue(move.appears(timeout: 5), "no context menu on a book")
+        shot(app, "t-4-menu")
+        move.tap()
+        let folderName = app.textFields.firstMatch
+        XCTAssertTrue(folderName.appears(timeout: 5), "the move sheet did not open")
+        folderName.tap()
+        folderName.typeText("Pruebas")
+        shot(app, "t-5-move")
+        app.buttons["Move"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Pruebas"].firstMatch.appears(timeout: 10), "the folder did not appear")
+        pause()
+        shot(app, "t-6-folder")
+        if !book.exists { app.staticTexts["Pruebas"].firstMatch.tap() }
+        XCTAssertTrue(book.appears(timeout: 5), "the moved book is not under its folder")
+        book.press(forDuration: 1.0)
+        let delete = app.buttons["Delete…"].firstMatch
+        XCTAssertTrue(delete.appears(timeout: 5))
+        delete.tap()
+        let confirm = app.buttons["Delete"].firstMatch
+        XCTAssertTrue(confirm.appears(timeout: 5), "no delete confirmation")
+        confirm.tap()
+        XCTAssertTrue(until(10) { !book.exists }, "the deleted book is still listed")
+        app.terminate()
+    }
+
+    /// Sync with the real engine inside the iOS build, kept to this machine:
+    /// it comes online with a pairing code, and turns off again.
+    func testSyncLocalEngine() throws {
+        guard let dir = ProcessInfo.processInfo.environment["FLTS_UITEST_SYNC_DIR"], !dir.isEmpty else {
+            throw XCTSkip("local sync engine only")
+        }
+        let app = launch(dir: dir, env: ["FLTS_DISABLE_SYNC": "", "FLTS_SYNC_HERMETIC": "1"])
+        XCTAssertTrue(app.staticTexts["Lluvia en la ciudad"].firstMatch.appears(timeout: 30))
+        app.buttons["Settings"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Sync"].firstMatch.appears(timeout: 5))
+        app.staticTexts["Sync"].firstMatch.tap()
+        let toggle = app.switches.firstMatch
+        XCTAssertTrue(toggle.appears(timeout: 5), "no sync toggle")
+        toggle.switches.firstMatch.exists ? toggle.switches.firstMatch.tap() : toggle.tap()
+        let online = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Online'")).firstMatch
+        XCTAssertTrue(online.appears(timeout: 120), "sync did not come online")
+        XCTAssertTrue(app.images["Pairing code"].firstMatch.appears(timeout: 10), "no pairing code")
+        pause()
+        shot(app, "s-1-sync-online")
+        let name = app.textFields.firstMatch
+        XCTAssertFalse((name.value as? String ?? "").isEmpty, "this device has no name")
+        toggle.switches.firstMatch.exists ? toggle.switches.firstMatch.tap() : toggle.tap()
+        XCTAssertTrue(until(60) { !online.exists }, "sync did not turn off")
+        app.terminate()
+    }
+
     func testTour() throws {
         guard let dir = ProcessInfo.processInfo.environment["FLTS_UITEST_CONFIG_DIR"], !dir.isEmpty else {
             throw XCTSkip("set FLTS_UITEST_CONFIG_DIR")
