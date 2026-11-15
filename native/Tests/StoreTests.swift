@@ -1149,6 +1149,9 @@ extension NSView {
     /// The Lyrics window keeps the playing line in view: with a song under way
     /// it opens scrolled to it, and scrolls on as the song plays.
     @Test func lyricsFollowThePlayingLine() async throws {
+        // Nothing renders or scrolls while the screen is locked.
+        let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+        guard session?["CGSSessionScreenIsLocked"] as? Bool != true else { return }
         let core = fake()
         core.getTrackLyricsStateHandler = { _, _, _ in
             TrackLyricsState(

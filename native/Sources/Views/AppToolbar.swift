@@ -4,8 +4,10 @@ import SwiftUI
 /// toolbar is left to the book; Lyrics is also in the Window menu (⇧⌘L).
 struct AppToolbarItems: ToolbarContent {
     @Environment(AppModel.self) private var model
+    #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
+    #endif
     @AppStorage("settingsTab", store: AppDefaults.store) private var settingsTab = SettingsTab.translation
 
     var body: some ToolbarContent {
@@ -13,7 +15,7 @@ struct AppToolbarItems: ToolbarContent {
             if model.config.config?.syncEnabled == true {
                 Button {
                     settingsTab = .sync
-                    openSettings()
+                    showSettings()
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: syncSymbol)
@@ -38,13 +40,30 @@ struct AppToolbarItems: ToolbarContent {
                 .help(ankiHelp)
                 .accessibilityLabel("Sync Anki")
             }
+            #if os(macOS)
             Button {
                 openWindow(id: "lyrics")
             } label: {
                 Label("Lyrics", systemImage: "music.note.list")
             }
             .help("Translated lyrics for what Spotify is playing (⇧⌘L)")
+            #else
+            // No Settings menu on iOS; Lyrics (Spotify on the desktop) is macOS only.
+            Button {
+                showSettings()
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+            }
+            #endif
         }
+    }
+
+    private func showSettings() {
+        #if os(macOS)
+        openSettings()
+        #else
+        model.showSettings = true
+        #endif
     }
 
     private var syncBusy: Bool {

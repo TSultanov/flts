@@ -39,6 +39,17 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "91729FB18C4AFD65A8B00A5A"
+               BuildableName = "FLTSiOSUITests.xctest"
+               BlueprintName = "FLTSiOSUITests"
+               ReferencedContainer = "container:FLTS.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
       <CommandLineArguments>
       </CommandLineArguments>

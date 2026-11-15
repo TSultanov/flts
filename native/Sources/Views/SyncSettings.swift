@@ -9,6 +9,9 @@ struct SyncSettings: View {
     @State private var deviceName = ""
     @State private var webUI: URL?
     @State private var removing: DeviceEntry?
+    #if os(iOS)
+    @State private var scanning = false
+    #endif
 
     var body: some View {
         let sync = model.sync
@@ -24,7 +27,14 @@ struct SyncSettings: View {
                     "Sync this library with my other devices",
                     isOn: Binding(
                         get: { config.config?.syncEnabled ?? false },
-                        set: { on in Task { await sync.setEnabled(on) } }))
+                        set: { on in
+                            Task {
+                                if on, config.config?.syncDeviceName == nil, let name = SyncStore.suggestedDeviceName {
+                                    await sync.setDeviceName(name)
+                                }
+                                await sync.setEnabled(on)
+                            }
+                        }))
                 if config.config?.syncEnabled == true {
                     HStack {
                         TextField("This device's name", text: $deviceName)
@@ -47,7 +57,7 @@ struct SyncSettings: View {
                     Section("Pair a device") {
                         HStack(alignment: .top, spacing: 16) {
                             if let qr = Platform.qrCode(SyncStore.pairingPayload(deviceId: device.deviceId, name: device.name)) {
-                                Image(nsImage: qr)
+                                qr
                                     .interpolation(.none)
                                     .resizable()
                                     .frame(width: 132, height: 132)
@@ -63,6 +73,18 @@ struct SyncSettings: View {
                                     .controlSize(.small)
                             }
                         }
+                        #if os(iOS)
+                        if PairingScanner.isSupported {
+                            Button {
+                                scanning = true
+                            } label: {
+                                Label("Scan Another Device's Code", systemImage: "qrcode.viewfinder")
+                            }
+                            .sheet(isPresented: $scanning) {
+                                PairingScanner { payload in addId = payload }
+                            }
+                        }
+                        #endif
                         TextField("Other device's ID or pairing code", text: $addId)
                         TextField("Its name", text: $addName)
                         HStack {

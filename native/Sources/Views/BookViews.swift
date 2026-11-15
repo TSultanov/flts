@@ -152,8 +152,7 @@ struct BookReaderScreen: View {
             }
         }
         // The book names the window; the chapter is the subtitle when there is one to name.
-        .navigationTitle(model.library.book(session.book.bookId)?.title ?? "")
-        .navigationSubtitle(chapterTitle)
+        .bookTitle(model.library.book(session.book.bookId)?.title ?? "", chapter: chapterTitle)
         .toolbar { toolbar }
         .focusedSceneValue(\.readerControls, session.controls)
         .focusedSceneValue(

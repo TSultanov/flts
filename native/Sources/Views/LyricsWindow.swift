@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 struct LyricsWindow: View {
@@ -225,3 +226,4 @@ private struct LyricsLineView: View {
         }
     }
 }
+#endif

@@ -89,6 +89,11 @@ struct MainView: View {
         .sheet(isPresented: $model.showImport) {
             ImportSheet()
         }
+        #if os(iOS)
+        .sheet(isPresented: $model.showSettings) {
+            SettingsView()
+        }
+        #endif
         .onChange(of: model.library.books) { _, books in
             // A remembered book from another library (or deleted elsewhere).
             if model.library.loaded, let id = model.selectedBookId, !books.contains(where: { $0.id == id }) {

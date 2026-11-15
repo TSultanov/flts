@@ -25,6 +25,8 @@ final class AppModel {
     /// The book open in the main window. Launch opens the library, as the web app does.
     var selectedBookId: UUID?
     var showImport = false
+    /// iOS presents Settings as a sheet (macOS has its Settings window).
+    var showSettings = false
     var lastError: String?
     /// Set when the open book was deleted (often on another device).
     var deletedBookNotice: String?

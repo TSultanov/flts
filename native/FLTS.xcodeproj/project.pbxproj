@@ -9,16 +9,21 @@
 /* Begin PBXBuildFile section */
 		000BD669785543A73E3E589B /* TranslationActivityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 808EF6D774D2C5DBD545A952 /* TranslationActivityStore.swift */; };
 		04028FDD4BF7586FCBD8BF7D /* flts_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06219F2030CAC5DF34F61B09 /* flts_ffi.swift */; };
-		0446AC1FC93C69CED82D2AA9 /* Probe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43B063C26AA85A3F981A9217 /* Probe.swift */; };
 		0C15C213E85241FCD05F8734 /* TranslationActivityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 808EF6D774D2C5DBD545A952 /* TranslationActivityStore.swift */; };
 		11F00D3DB3015E5D38E0D034 /* LyricsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 826E12A28BF0C377970BD0F2 /* LyricsWindow.swift */; };
 		12B638E2F3AAA63B22E6F07A /* WordStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF620E2BDF89F27D0BD0C3E2 /* WordStore.swift */; };
+		14CE1ADB0D4C7A455FE01788 /* Compat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6064D0553C1B22957D2C9552 /* Compat.swift */; };
 		15CC5981CBF78F7637E2D053 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8632E31A587AF6A7BCAD6379 /* RootView.swift */; };
+		1B174B6C92AD61E5E3014A8F /* ReaderCanvas+iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB9767B5ACC22185AE232AC9 /* ReaderCanvas+iOS.swift */; };
 		1D805F049F0604182CFEAF02 /* RealLibraryCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = 362BAF23934FFA4B50211FBC /* RealLibraryCheck.swift */; };
 		2385F1EFC1043E1768C64448 /* AppDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD672C8ADB59753249A8346A /* AppDefaults.swift */; };
+		333B8E0B798B3DCD58F81E1B /* AppShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81E0E9F56451A0E9ECCA6BA4 /* AppShared.swift */; };
 		34348C68DFC32ABCA0A2F821 /* ReaderCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = 852DAE2201EA604647746074 /* ReaderCanvas.swift */; };
 		35FD173C6FB4B63BF0C791E0 /* EventHub.swift in Sources */ = {isa = PBXBuildFile; fileRef = A320CFF769560DB88A407B7F /* EventHub.swift */; };
+		3614AAC76FBAFCEDC7C27580 /* LibraryPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2250D32D8694EE7BF4C6965 /* LibraryPage.swift */; };
 		36FB356E38CE19CF4AD31CB2 /* LyricsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 551E4B4C7EB4310A82E080B0 /* LyricsStore.swift */; };
+		37FC695185E352E2E8EDF387 /* ReaderPlatform.swift in Sources */ = {isa = PBXBuildFile; fileRef = 132C596FABF7E7C15B97764F /* ReaderPlatform.swift */; };
+		3FE5452D8DCE6439B9590220 /* ChapterTextLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0DF7B15C096AE212948CEA3 /* ChapterTextLayout.swift */; };
 		404DFDE53E7B26B4B7770597 /* ChapterTextLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0DF7B15C096AE212948CEA3 /* ChapterTextLayout.swift */; };
 		417BB98DF6E818FD590F464C /* ReaderCanvas+macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B9B7581C767E0DA4800EFEC /* ReaderCanvas+macOS.swift */; };
 		4429284A0EC4901B5D201DD7 /* CoreClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 168B0D07C5449D5BD9151A9A /* CoreClient.swift */; };
@@ -26,37 +31,59 @@
 		4DBD0AFB310A2B1AE72CD1BA /* BookStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DBF3A20A2A2021F0C00A8F7 /* BookStore.swift */; };
 		4EBDD6A0D749D34F4B833AAA /* CoreClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 168B0D07C5449D5BD9151A9A /* CoreClient.swift */; };
 		56A6E1EB623723B490C413C2 /* ConfigStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB4BB56CD599107ADE1BBDFD /* ConfigStore.swift */; };
+		5771EF6D0D0A42C7A25B933C /* AppToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 800EFD0D81D9FAAEDFDEF28A /* AppToolbar.swift */; };
 		57BAC3AB3836F392BDEE4930 /* ReaderPlatform.swift in Sources */ = {isa = PBXBuildFile; fileRef = 132C596FABF7E7C15B97764F /* ReaderPlatform.swift */; };
+		5D44987AA7346E624AD8F4E4 /* TouchFeatures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3365A38CF4D2D2C35A844F6D /* TouchFeatures.swift */; };
 		5FD5312A22C300415D0B9DD9 /* LibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80FF9AB8FDB3254F370AD23A /* LibraryStore.swift */; };
+		64BEDF7760C2135D4457D48B /* LyricsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 826E12A28BF0C377970BD0F2 /* LyricsWindow.swift */; };
+		66180A6BBA09C509924E55DD /* WordPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF76BB711ADF8800124318D0 /* WordPanel.swift */; };
+		680D6156FD32925884FB9881 /* SyncSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCB17544F8057188DBE9828E /* SyncSettings.swift */; };
 		698ACEB43A2AE9CCFC9AC4D1 /* FLTSUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE11A7ED6DC117E6DA1C3860 /* FLTSUITests.swift */; };
+		6F0A10462CE77E735DBD554A /* FLTSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45721FA7B8BB10D4A9229905 /* FLTSApp.swift */; };
+		704239B821AFFC740D0CD2F1 /* Compat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6064D0553C1B22957D2C9552 /* Compat.swift */; };
+		766612C83DBE3D1B8E165AFA /* FLTSiOSUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC6345C542296A36DB4E0720 /* FLTSiOSUITests.swift */; };
 		82A3FD25C798940D49204C0C /* ChapterStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD897556D674C2A8FF5C7F84 /* ChapterStore.swift */; };
+		851DB8913977AD886947E44D /* Platform.swift in Sources */ = {isa = PBXBuildFile; fileRef = C204E74960D0BE3853A082C0 /* Platform.swift */; };
 		854C928B43E5251BD99008C8 /* SyncStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EBF97A3C27722231CD62638 /* SyncStore.swift */; };
+		8D1D7F2C949D304DC128CD5A /* BookViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AB7B0CF2CE6191870CA9198 /* BookViews.swift */; };
 		8E8C83418E759F51BFB2388B /* LibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80FF9AB8FDB3254F370AD23A /* LibraryStore.swift */; };
+		9571C1E9CE59C942C764D811 /* FLTSApp+iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8AD471EC48EE30AB5530C99 /* FLTSApp+iOS.swift */; };
 		9A3601CA909CF13446C4A346 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5582E16E0D191ABC1682CDB /* SettingsView.swift */; };
 		9C03B53EEF52F47213A79E42 /* EventHub.swift in Sources */ = {isa = PBXBuildFile; fileRef = A320CFF769560DB88A407B7F /* EventHub.swift */; };
 		A5E7C6A4F22F2155F0B533B6 /* WordStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF620E2BDF89F27D0BD0C3E2 /* WordStore.swift */; };
 		A5EFCFD3858C53563D1F6F49 /* SyncStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EBF97A3C27722231CD62638 /* SyncStore.swift */; };
 		A703852169478D2CED2BBEB2 /* StoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D73BD0D3E208A638D0039218 /* StoreTests.swift */; };
+		A7E38AC6AE4EEA35DCA1177C /* FLTSApp+iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8AD471EC48EE30AB5530C99 /* FLTSApp+iOS.swift */; };
 		ABD4089D5C7BCAFD4A8CD632 /* ReaderPreferencesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70EC6C653D4904487574F42B /* ReaderPreferencesTests.swift */; };
+		AC35C01EE305AB07DEFC7310 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B43A8279FF58466B28B95E2E /* Assets.xcassets */; };
+		AC4BB4A1427DA44BD6C42F92 /* TouchFeatures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3365A38CF4D2D2C35A844F6D /* TouchFeatures.swift */; };
 		AFDAC85319D40C1618791C32 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA78D2BEBD2D2F194292BB0E /* AppModel.swift */; };
 		B0E6C227199FBDAC6BF293EF /* FakeCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F0075E0D7E3FACE312CBEAB /* FakeCore.swift */; };
+		B26028D4A49C1CC379C776E8 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8632E31A587AF6A7BCAD6379 /* RootView.swift */; };
 		B3DF2DB2680389EDF28FF18F /* SyncSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCB17544F8057188DBE9828E /* SyncSettings.swift */; };
 		B742CC5E45A34E4630F64E46 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D492B798E1EF8870DF93785 /* Models.swift */; };
 		BC195EAFD21890C88AC22052 /* flts_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06219F2030CAC5DF34F61B09 /* flts_ffi.swift */; };
+		CE23094B723D4EA5111E7B66 /* ReaderCanvas+macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B9B7581C767E0DA4800EFEC /* ReaderCanvas+macOS.swift */; };
 		CF3B6C0CBDBD7F97DBD988E2 /* FLTSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45721FA7B8BB10D4A9229905 /* FLTSApp.swift */; };
 		D120D59547807060B809C307 /* ChapterStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD897556D674C2A8FF5C7F84 /* ChapterStore.swift */; };
 		D3CD6AA0E049303220038A2B /* LyricsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 551E4B4C7EB4310A82E080B0 /* LyricsStore.swift */; };
+		D696B7E2605702BE76345730 /* ReaderCanvas+iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB9767B5ACC22185AE232AC9 /* ReaderCanvas+iOS.swift */; };
 		D7CCA8F4C8D86C9DB8CD31DC /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D492B798E1EF8870DF93785 /* Models.swift */; };
+		D95F4BAA66680FF8843C4987 /* AppShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81E0E9F56451A0E9ECCA6BA4 /* AppShared.swift */; };
 		D9E991FA981958E5AB2505B3 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA78D2BEBD2D2F194292BB0E /* AppModel.swift */; };
 		DA09882F5E523A73CFF77FBA /* ConfigStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB4BB56CD599107ADE1BBDFD /* ConfigStore.swift */; };
 		DA70792FDB1678EA9410D5F3 /* WordPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF76BB711ADF8800124318D0 /* WordPanel.swift */; };
 		DCC443EA00378FA373EE391A /* BookViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AB7B0CF2CE6191870CA9198 /* BookViews.swift */; };
+		E05501D92BF779A34759697F /* ImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 743F9310B7B8ED2F9548533D /* ImportSheet.swift */; };
 		E103D9618647EFCE29DD8FA2 /* LibraryPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2250D32D8694EE7BF4C6965 /* LibraryPage.swift */; };
 		E19BAE34AE01D4472A5486AA /* AppDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD672C8ADB59753249A8346A /* AppDefaults.swift */; };
 		E1CACD1F098516CC34D29CE7 /* BookStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DBF3A20A2A2021F0C00A8F7 /* BookStore.swift */; };
 		E2AF0C0B2A6EF430399F2A33 /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CE17BCA5E5842EA67FF182A /* ReaderView.swift */; };
 		E5BE98D482909C5EDAA5FD3A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DA8BC76C06AE6DA333A0F019 /* Assets.xcassets */; };
 		EEBD920ACFC0935697524D12 /* Platform.swift in Sources */ = {isa = PBXBuildFile; fileRef = C204E74960D0BE3853A082C0 /* Platform.swift */; };
+		EFDECEF14B7166604A33722B /* ReaderCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = 852DAE2201EA604647746074 /* ReaderCanvas.swift */; };
+		F6348884AE04A73B8B7E85C0 /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CE17BCA5E5842EA67FF182A /* ReaderView.swift */; };
+		FDA57772A2DCF5991BAC4C10 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5582E16E0D191ABC1682CDB /* SettingsView.swift */; };
 		FE3A5F5676B5E022F4C61475 /* AppToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 800EFD0D81D9FAAEDFDEF28A /* AppToolbar.swift */; };
 /* End PBXBuildFile section */
 
@@ -67,6 +94,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = 106AFD4559FE89BE936980FC;
 			remoteInfo = FLTS;
+		};
+		9FB8C243FA3063AE8DC1CAD6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2DA203E44AE695B71FD419BF /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EE07DCEB5BF55DAAD009B41B;
+			remoteInfo = "FLTS-iOS";
 		};
 		CC696327263B1055BFC1B067 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -82,17 +116,18 @@
 		132C596FABF7E7C15B97764F /* ReaderPlatform.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderPlatform.swift; sourceTree = "<group>"; };
 		168B0D07C5449D5BD9151A9A /* CoreClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreClient.swift; sourceTree = "<group>"; };
 		1D492B798E1EF8870DF93785 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		27BE31E6FA971C07733F588B /* FLTSiOSUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FLTSiOSUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		2CE17BCA5E5842EA67FF182A /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
 		2DBF3A20A2A2021F0C00A8F7 /* BookStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookStore.swift; sourceTree = "<group>"; };
+		3365A38CF4D2D2C35A844F6D /* TouchFeatures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TouchFeatures.swift; sourceTree = "<group>"; };
 		362BAF23934FFA4B50211FBC /* RealLibraryCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealLibraryCheck.swift; sourceTree = "<group>"; };
 		3EAB6E06F2BDDB11536750AF /* FLTS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FLTS.entitlements; sourceTree = "<group>"; };
-		43B063C26AA85A3F981A9217 /* Probe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Probe.swift; sourceTree = "<group>"; };
 		45721FA7B8BB10D4A9229905 /* FLTSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FLTSApp.swift; sourceTree = "<group>"; };
 		4AB7B0CF2CE6191870CA9198 /* BookViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookViews.swift; sourceTree = "<group>"; };
 		4FC4DED0A25E1B8927D06CEC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		551E4B4C7EB4310A82E080B0 /* LyricsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyricsStore.swift; sourceTree = "<group>"; };
 		5EBF97A3C27722231CD62638 /* SyncStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncStore.swift; sourceTree = "<group>"; };
-		6E114401E84DD3A9695481E9 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		6064D0553C1B22957D2C9552 /* Compat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Compat.swift; sourceTree = "<group>"; };
 		6F0075E0D7E3FACE312CBEAB /* FakeCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FakeCore.swift; sourceTree = "<group>"; };
 		70EC6C653D4904487574F42B /* ReaderPreferencesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderPreferencesTests.swift; sourceTree = "<group>"; };
 		743F9310B7B8ED2F9548533D /* ImportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportSheet.swift; sourceTree = "<group>"; };
@@ -102,14 +137,18 @@
 		800EFD0D81D9FAAEDFDEF28A /* AppToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppToolbar.swift; sourceTree = "<group>"; };
 		808EF6D774D2C5DBD545A952 /* TranslationActivityStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranslationActivityStore.swift; sourceTree = "<group>"; };
 		80FF9AB8FDB3254F370AD23A /* LibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryStore.swift; sourceTree = "<group>"; };
+		81E0E9F56451A0E9ECCA6BA4 /* AppShared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShared.swift; sourceTree = "<group>"; };
 		826E12A28BF0C377970BD0F2 /* LyricsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyricsWindow.swift; sourceTree = "<group>"; };
 		852DAE2201EA604647746074 /* ReaderCanvas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderCanvas.swift; sourceTree = "<group>"; };
 		8632E31A587AF6A7BCAD6379 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		A320CFF769560DB88A407B7F /* EventHub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventHub.swift; sourceTree = "<group>"; };
 		B2250D32D8694EE7BF4C6965 /* LibraryPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryPage.swift; sourceTree = "<group>"; };
+		B43A8279FF58466B28B95E2E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		BA78D2BEBD2D2F194292BB0E /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		BCB17544F8057188DBE9828E /* SyncSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncSettings.swift; sourceTree = "<group>"; };
 		C204E74960D0BE3853A082C0 /* Platform.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Platform.swift; sourceTree = "<group>"; };
+		CB9767B5ACC22185AE232AC9 /* ReaderCanvas+iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ReaderCanvas+iOS.swift"; sourceTree = "<group>"; };
+		CC6345C542296A36DB4E0720 /* FLTSiOSUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FLTSiOSUITests.swift; sourceTree = "<group>"; };
 		D5582E16E0D191ABC1682CDB /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		D73BD0D3E208A638D0039218 /* StoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreTests.swift; sourceTree = "<group>"; };
 		DA8BC76C06AE6DA333A0F019 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -119,6 +158,7 @@
 		E0DF7B15C096AE212948CEA3 /* ChapterTextLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterTextLayout.swift; sourceTree = "<group>"; };
 		EF620E2BDF89F27D0BD0C3E2 /* WordStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WordStore.swift; sourceTree = "<group>"; };
 		EF76BB711ADF8800124318D0 /* WordPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WordPanel.swift; sourceTree = "<group>"; };
+		F8AD471EC48EE30AB5530C99 /* FLTSApp+iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "FLTSApp+iOS.swift"; sourceTree = "<group>"; };
 		FA267B8B9DB641AC564860E2 /* FLTS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FLTS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FD672C8ADB59753249A8346A /* AppDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDefaults.swift; sourceTree = "<group>"; };
 		FD897556D674C2A8FF5C7F84 /* ChapterStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterStore.swift; sourceTree = "<group>"; };
@@ -130,6 +170,7 @@
 			children = (
 				E0DF7B15C096AE212948CEA3 /* ChapterTextLayout.swift */,
 				852DAE2201EA604647746074 /* ReaderCanvas.swift */,
+				CB9767B5ACC22185AE232AC9 /* ReaderCanvas+iOS.swift */,
 				7B9B7581C767E0DA4800EFEC /* ReaderCanvas+macOS.swift */,
 				132C596FABF7E7C15B97764F /* ReaderPlatform.swift */,
 				2CE17BCA5E5842EA67FF182A /* ReaderView.swift */,
@@ -142,6 +183,7 @@
 			children = (
 				800EFD0D81D9FAAEDFDEF28A /* AppToolbar.swift */,
 				4AB7B0CF2CE6191870CA9198 /* BookViews.swift */,
+				6064D0553C1B22957D2C9552 /* Compat.swift */,
 				743F9310B7B8ED2F9548533D /* ImportSheet.swift */,
 				B2250D32D8694EE7BF4C6965 /* LibraryPage.swift */,
 				826E12A28BF0C377970BD0F2 /* LyricsWindow.swift */,
@@ -174,6 +216,7 @@
 			children = (
 				7AD04AE227499298B4AAB3EE /* FLTS-iOS.app */,
 				FA267B8B9DB641AC564860E2 /* FLTS.app */,
+				27BE31E6FA971C07733F588B /* FLTSiOSUITests.xctest */,
 				DEBB091B25A0810DE5E01E7F /* FLTSTests.xctest */,
 				7FABDCCEFCFBD32B6B09CF9C /* FLTSUITests.xctest */,
 			);
@@ -211,14 +254,25 @@
 				B4E8D4FC7D781656FB35A64A /* Sources */,
 				570D54AAA08EC80C2587274F /* Tests */,
 				2E39C5445ED3688DCDBE26A5 /* UITests */,
+				9BE6A7A7553AA8BE183B8603 /* UITests-iOS */,
 				4A27128F103E99E4BD6B1506 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		9BE6A7A7553AA8BE183B8603 /* UITests-iOS */ = {
+			isa = PBXGroup;
+			children = (
+				CC6345C542296A36DB4E0720 /* FLTSiOSUITests.swift */,
+			);
+			path = "UITests-iOS";
 			sourceTree = "<group>";
 		};
 		AA713CEA95EB8F794B72FD95 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				81E0E9F56451A0E9ECCA6BA4 /* AppShared.swift */,
 				45721FA7B8BB10D4A9229905 /* FLTSApp.swift */,
+				F8AD471EC48EE30AB5530C99 /* FLTSApp+iOS.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -239,8 +293,7 @@
 		B682911B0DE2559E5713EFEC /* iOS */ = {
 			isa = PBXGroup;
 			children = (
-				6E114401E84DD3A9695481E9 /* Info.plist */,
-				43B063C26AA85A3F981A9217 /* Probe.swift */,
+				B43A8279FF58466B28B95E2E /* Assets.xcassets */,
 			);
 			path = iOS;
 			sourceTree = "<group>";
@@ -259,6 +312,7 @@
 			isa = PBXGroup;
 			children = (
 				C204E74960D0BE3853A082C0 /* Platform.swift */,
+				3365A38CF4D2D2C35A844F6D /* TouchFeatures.swift */,
 			);
 			path = Platform;
 			sourceTree = "<group>";
@@ -300,6 +354,24 @@
 			productName = FLTS;
 			productReference = FA267B8B9DB641AC564860E2 /* FLTS.app */;
 			productType = "com.apple.product-type.application";
+		};
+		91729FB18C4AFD65A8B00A5A /* FLTSiOSUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C3C66B7C66B5E6028FCC6906 /* Build configuration list for PBXNativeTarget "FLTSiOSUITests" */;
+			buildPhases = (
+				50771BECFE7919EB5F6AF422 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				557C68C77EE611DB1C5C2551 /* PBXTargetDependency */,
+			);
+			name = FLTSiOSUITests;
+			packageProductDependencies = (
+			);
+			productName = FLTSiOSUITests;
+			productReference = 27BE31E6FA971C07733F588B /* FLTSiOSUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 		CC7BAD23A8F5EBA862E7F9E6 /* FLTSTests */ = {
 			isa = PBXNativeTarget;
@@ -343,6 +415,7 @@
 			buildPhases = (
 				3A95F6F949FC67AC9C8468C8 /* Build Rust core */,
 				19ED3243B4F21A746FB02FCD /* Sources */,
+				A59EC99B0C7EE141C2AFA7BA /* Resources */,
 			);
 			buildRules = (
 			);
@@ -367,6 +440,10 @@
 					106AFD4559FE89BE936980FC = {
 						DevelopmentTeam = Y7859GAXS2;
 						ProvisioningStyle = Automatic;
+					};
+					91729FB18C4AFD65A8B00A5A = {
+						DevelopmentTeam = Y7859GAXS2;
+						TestTargetID = EE07DCEB5BF55DAAD009B41B;
 					};
 					CC7BAD23A8F5EBA862E7F9E6 = {
 						DevelopmentTeam = Y7859GAXS2;
@@ -397,6 +474,7 @@
 			targets = (
 				106AFD4559FE89BE936980FC /* FLTS */,
 				EE07DCEB5BF55DAAD009B41B /* FLTS-iOS */,
+				91729FB18C4AFD65A8B00A5A /* FLTSiOSUITests */,
 				CC7BAD23A8F5EBA862E7F9E6 /* FLTSTests */,
 				E98851780BA7EC0BCE739D80 /* FLTSUITests */,
 			);
@@ -409,6 +487,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				E5BE98D482909C5EDAA5FD3A /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A59EC99B0C7EE141C2AFA7BA /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AC35C01EE305AB07DEFC7310 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -462,19 +548,47 @@
 			files = (
 				2385F1EFC1043E1768C64448 /* AppDefaults.swift in Sources */,
 				D9E991FA981958E5AB2505B3 /* AppModel.swift in Sources */,
+				D95F4BAA66680FF8843C4987 /* AppShared.swift in Sources */,
+				5771EF6D0D0A42C7A25B933C /* AppToolbar.swift in Sources */,
 				E1CACD1F098516CC34D29CE7 /* BookStore.swift in Sources */,
+				8D1D7F2C949D304DC128CD5A /* BookViews.swift in Sources */,
 				82A3FD25C798940D49204C0C /* ChapterStore.swift in Sources */,
+				3FE5452D8DCE6439B9590220 /* ChapterTextLayout.swift in Sources */,
+				704239B821AFFC740D0CD2F1 /* Compat.swift in Sources */,
 				56A6E1EB623723B490C413C2 /* ConfigStore.swift in Sources */,
 				4429284A0EC4901B5D201DD7 /* CoreClient.swift in Sources */,
 				9C03B53EEF52F47213A79E42 /* EventHub.swift in Sources */,
+				9571C1E9CE59C942C764D811 /* FLTSApp+iOS.swift in Sources */,
+				6F0A10462CE77E735DBD554A /* FLTSApp.swift in Sources */,
+				E05501D92BF779A34759697F /* ImportSheet.swift in Sources */,
+				3614AAC76FBAFCEDC7C27580 /* LibraryPage.swift in Sources */,
 				5FD5312A22C300415D0B9DD9 /* LibraryStore.swift in Sources */,
 				36FB356E38CE19CF4AD31CB2 /* LyricsStore.swift in Sources */,
+				64BEDF7760C2135D4457D48B /* LyricsWindow.swift in Sources */,
 				D7CCA8F4C8D86C9DB8CD31DC /* Models.swift in Sources */,
-				0446AC1FC93C69CED82D2AA9 /* Probe.swift in Sources */,
+				851DB8913977AD886947E44D /* Platform.swift in Sources */,
+				1B174B6C92AD61E5E3014A8F /* ReaderCanvas+iOS.swift in Sources */,
+				CE23094B723D4EA5111E7B66 /* ReaderCanvas+macOS.swift in Sources */,
+				EFDECEF14B7166604A33722B /* ReaderCanvas.swift in Sources */,
+				37FC695185E352E2E8EDF387 /* ReaderPlatform.swift in Sources */,
+				F6348884AE04A73B8B7E85C0 /* ReaderView.swift in Sources */,
+				B26028D4A49C1CC379C776E8 /* RootView.swift in Sources */,
+				FDA57772A2DCF5991BAC4C10 /* SettingsView.swift in Sources */,
+				680D6156FD32925884FB9881 /* SyncSettings.swift in Sources */,
 				854C928B43E5251BD99008C8 /* SyncStore.swift in Sources */,
+				AC4BB4A1427DA44BD6C42F92 /* TouchFeatures.swift in Sources */,
 				0C15C213E85241FCD05F8734 /* TranslationActivityStore.swift in Sources */,
+				66180A6BBA09C509924E55DD /* WordPanel.swift in Sources */,
 				A5E7C6A4F22F2155F0B533B6 /* WordStore.swift in Sources */,
 				BC195EAFD21890C88AC22052 /* flts_ffi.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		50771BECFE7919EB5F6AF422 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				766612C83DBE3D1B8E165AFA /* FLTSiOSUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -503,14 +617,17 @@
 			files = (
 				E19BAE34AE01D4472A5486AA /* AppDefaults.swift in Sources */,
 				AFDAC85319D40C1618791C32 /* AppModel.swift in Sources */,
+				333B8E0B798B3DCD58F81E1B /* AppShared.swift in Sources */,
 				FE3A5F5676B5E022F4C61475 /* AppToolbar.swift in Sources */,
 				4DBD0AFB310A2B1AE72CD1BA /* BookStore.swift in Sources */,
 				DCC443EA00378FA373EE391A /* BookViews.swift in Sources */,
 				D120D59547807060B809C307 /* ChapterStore.swift in Sources */,
 				404DFDE53E7B26B4B7770597 /* ChapterTextLayout.swift in Sources */,
+				14CE1ADB0D4C7A455FE01788 /* Compat.swift in Sources */,
 				DA09882F5E523A73CFF77FBA /* ConfigStore.swift in Sources */,
 				4EBDD6A0D749D34F4B833AAA /* CoreClient.swift in Sources */,
 				35FD173C6FB4B63BF0C791E0 /* EventHub.swift in Sources */,
+				A7E38AC6AE4EEA35DCA1177C /* FLTSApp+iOS.swift in Sources */,
 				CF3B6C0CBDBD7F97DBD988E2 /* FLTSApp.swift in Sources */,
 				4BB8A2719274333D354D97AE /* ImportSheet.swift in Sources */,
 				E103D9618647EFCE29DD8FA2 /* LibraryPage.swift in Sources */,
@@ -519,6 +636,7 @@
 				11F00D3DB3015E5D38E0D034 /* LyricsWindow.swift in Sources */,
 				B742CC5E45A34E4630F64E46 /* Models.swift in Sources */,
 				EEBD920ACFC0935697524D12 /* Platform.swift in Sources */,
+				D696B7E2605702BE76345730 /* ReaderCanvas+iOS.swift in Sources */,
 				417BB98DF6E818FD590F464C /* ReaderCanvas+macOS.swift in Sources */,
 				34348C68DFC32ABCA0A2F821 /* ReaderCanvas.swift in Sources */,
 				57BAC3AB3836F392BDEE4930 /* ReaderPlatform.swift in Sources */,
@@ -527,6 +645,7 @@
 				9A3601CA909CF13446C4A346 /* SettingsView.swift in Sources */,
 				B3DF2DB2680389EDF28FF18F /* SyncSettings.swift in Sources */,
 				A5EFCFD3858C53563D1F6F49 /* SyncStore.swift in Sources */,
+				5D44987AA7346E624AD8F4E4 /* TouchFeatures.swift in Sources */,
 				000BD669785543A73E3E589B /* TranslationActivityStore.swift in Sources */,
 				DA70792FDB1678EA9410D5F3 /* WordPanel.swift in Sources */,
 				12B638E2F3AAA63B22E6F07A /* WordStore.swift in Sources */,
@@ -537,6 +656,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		557C68C77EE611DB1C5C2551 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EE07DCEB5BF55DAAD009B41B /* FLTS-iOS */;
+			targetProxy = 9FB8C243FA3063AE8DC1CAD6 /* PBXContainerItemProxy */;
+		};
 		749C054D2C0DA5A6847D54F9 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 106AFD4559FE89BE936980FC /* FLTS */;
@@ -566,6 +690,24 @@
 				SDKROOT = macosx;
 				SWIFT_INCLUDE_PATHS = "$(PROJECT_DIR)/Generated";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FLTS.app/Contents/MacOS/FLTS";
+			};
+			name = Release;
+		};
+		41A7266DDD0087B9FD47D156 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.TS.FLTS.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "FLTS-iOS";
 			};
 			name = Release;
 		};
@@ -854,6 +996,24 @@
 			};
 			name = Release;
 		};
+		F83D12084729F1A41E95B852 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.TS.FLTS.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "FLTS-iOS";
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -871,6 +1031,15 @@
 			buildConfigurations = (
 				A2ACE82C111584E5BC505B24 /* Debug */,
 				41E2AADD70CC2A558E0F749F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C3C66B7C66B5E6028FCC6906 /* Build configuration list for PBXNativeTarget "FLTSiOSUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F83D12084729F1A41E95B852 /* Debug */,
+				41A7266DDD0087B9FD47D156 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

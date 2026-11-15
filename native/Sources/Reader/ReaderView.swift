@@ -103,7 +103,7 @@ struct ReaderView {
             }
         }
         // Progress rings follow activity.
-        canvas.needsDisplay = true
+        canvas.redraw()
     }
 
     struct ChapterKey: Equatable {

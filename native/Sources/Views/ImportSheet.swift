@@ -31,7 +31,7 @@ struct ImportSheet: View {
                     .disabled(kind != .text)
             }
         }
-        .frame(width: 560, height: 520)
+        .sheetSize(width: 560, height: 520)
     }
 }
 
@@ -68,7 +68,7 @@ private struct EpubImport: View {
                                 set: { on in if on { chosen.insert(index) } else { chosen.remove(index) } }))
                     }
                 }
-                .listStyle(.bordered)
+                .borderedList()
                 LanguagePicker(title: "Book language", selection: $language)
             } else {
                 Spacer()
@@ -117,6 +117,9 @@ private struct EpubImport: View {
         busy = true
         error = nil
         defer { busy = false }
+        // A file picked outside the app's container is readable only inside this scope (iOS).
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
             let parsed = try await model.library.parseEpub(at: url)
             language = model.config.suggestedSourceLanguage(for: parsed.language())
@@ -230,6 +233,19 @@ struct LanguagePicker: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
+        #if os(macOS)
+        picker
+        #else
+        // Outside a form, an iOS picker shows only its value.
+        HStack {
+            Text(title)
+            Spacer()
+            picker
+        }
+        #endif
+    }
+
+    private var picker: some View {
         Picker(title, selection: $selection) {
             ForEach(model.config.languages) { lang in
                 Text(lang.label).tag(lang.id)
@@ -258,22 +274,35 @@ struct OnboardingView: View {
             }
             .formStyle(.grouped)
             // About its content's height, so Continue sits right under the fields.
+            // iOS rows are taller, and the keyboard needs the form to scroll.
+            #if os(macOS)
             .frame(maxWidth: 520, maxHeight: 165)
+            #else
+            .frame(maxWidth: 520, maxHeight: 260)
+            .scrollContentBackground(.hidden)
+            #endif
             Button("Continue") {
                 // Fields save on Return or losing focus; ending editing commits the last one.
-                NSApp.keyWindow?.makeFirstResponder(nil)
+                Platform.endEditing()
                 tried = true
             }
             .keyboardShortcut(.defaultAction)
             .controlSize(.large)
+            .buttonStyle(.borderedProminent)
             if tried, let missing {
                 Text(missing)
                     .foregroundStyle(.red)
                     .font(.callout)
             }
+            #if os(macOS)
             Text("You can change these later in Settings (⌘,).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            #else
+            Text("You can change these later in Settings.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            #endif
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

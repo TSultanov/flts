@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
 
@@ -134,75 +135,4 @@ struct AppCommands: Commands {
         }
     }
 }
-
-struct BookActions {
-    let translateChapter: () -> Void
-    let toggleWordPanel: () -> Void
-    let toggleChapters: () -> Void
-    let hasChapters: Bool
-    var chaptersShown = false
-    var wordDetailsShown = false
-}
-
-extension FocusedValues {
-    @Entry var readerControls: ReaderControls?
-    @Entry var bookActions: BookActions?
-}
-
-/// Reader preferences shared by the menu and the reader.
-@MainActor
-@Observable
-final class ReaderPreferences {
-    static let shared = ReaderPreferences()
-    static let defaultFontSize: CGFloat = 18
-
-    var fontSize: CGFloat {
-        didSet {
-            // Reassigning here re-enters this observer, so only when it changes the value.
-            let clamped = min(max(fontSize, 12), 36)
-            guard clamped == fontSize else {
-                fontSize = clamped
-                return
-            }
-            AppDefaults.store.set(Double(fontSize), forKey: "readerFontSize")
-        }
-    }
-
-    private init() {
-        let saved = AppDefaults.store.double(forKey: "readerFontSize")
-        fontSize = saved > 0 ? CGFloat(saved) : Self.defaultFontSize
-    }
-
-    func typography(language: String? = nil) -> ReaderTypography {
-        var t = ReaderTypography()
-        t.fontSize = fontSize
-        t.language = language
-        return t
-    }
-}
-
-/// Light, dark, or the system's choice, under Reading in Settings.
-enum Appearance: String, CaseIterable, Identifiable {
-    case system, light, dark
-    var id: Self { self }
-
-    static let key = "appearance"
-
-    var title: String {
-        switch self {
-        case .system: "Match System"
-        case .light: "Light"
-        case .dark: "Dark"
-        }
-    }
-
-    @MainActor
-    static func apply() {
-        let raw = AppDefaults.store.string(forKey: key) ?? Appearance.system.rawValue
-        switch Appearance(rawValue: raw) ?? .system {
-        case .system: NSApp.appearance = nil
-        case .light: NSApp.appearance = NSAppearance(named: .aqua)
-        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
-        }
-    }
-}
+#endif

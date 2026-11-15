@@ -44,6 +44,8 @@ final class ReaderCanvas: PlatformView {
     /// Lets tests simulate a window drag.
     var inLiveResizeOverride = false
     weak var delegate: ReaderCanvasDelegate?
+    /// Whatever the platform's input code needs to keep (extensions cannot store).
+    var platformState: AnyObject?
 
     /// The page in the first column. Spreads keep the pairing the chapter
     /// opened with, so no page is ever shown in two of them; when that pairing
@@ -474,7 +476,7 @@ final class ReaderCanvas: PlatformView {
             let page = text.pages[index]
             let origin = CGPoint(x: columnX(column), y: margins.top)
             for (pid, rect) in controlRects(in: page, origin: origin, dy: origin.y - page.top)
-            where rect.insetBy(dx: -4, dy: -4).contains(viewPoint) {
+            where rect.insetBy(dx: -controlSlop, dy: -controlSlop).contains(viewPoint) {
                 return pid
             }
         }

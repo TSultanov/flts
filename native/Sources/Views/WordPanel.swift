@@ -36,7 +36,7 @@ struct WordPanel: View {
                             .frame(height: Self.barHeight)
                     }
                 }
-                .background(.bar)
+                .wordPanelBackground()
                 .overlay(alignment: .top) { Divider() }
                 .shadow(color: .black.opacity(expanded ? 0.1 : 0), radius: 10, y: -3)
             }
@@ -61,7 +61,7 @@ struct WordPanel: View {
                     }
                     .onEnded { _ in dragStart = nil }
             )
-            .pointerStyle(.rowResize)
+            .resizePointer()
             .accessibilityLabel("Resize word details")
     }
 }
@@ -95,6 +95,9 @@ private struct WordHeader: View {
                         .lineLimit(1)
                         .help(message)
                 }
+                #if os(iOS)
+                DictionaryButton(term: info.original)
+                #endif
                 if info.canCreateCard {
                     CardButton(state: word.cardState, compact: true) {
                         Task { await word.createCard() }
@@ -158,6 +161,9 @@ private struct WordBar: View {
                         .lineLimit(1)
                         .help(message)
                 }
+                #if os(iOS)
+                DictionaryButton(term: info.original)
+                #endif
                 if info.canCreateCard {
                     CardButton(state: word.cardState, compact: true) {
                         Task { await word.createCard() }
@@ -198,15 +204,18 @@ private struct WordFooter: View {
     @Environment(AppModel.self) private var model
     /// Defaults to the model that made the current translation, as in the web app.
     @State private var retranslateModel = ""
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     var body: some View {
         let word = session.word
         if let info = word.info {
             HStack {
-                Text("Translate paragraph again with")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize()
+                if sizeClass != .compact {
+                    Text("Translate paragraph again with")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                }
                 Picker("Model", selection: $retranslateModel) {
                     let models = model.config.models(for: model.config.config?.translationProvider ?? .google)
                     if !models.contains(where: { $0.id == retranslateModel }) {
@@ -250,48 +259,65 @@ private struct WordFooter: View {
 struct WordDetails: View {
     let session: BookSession
     @Environment(AppModel.self) private var model
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     var body: some View {
-        let word = session.word
-        if let info = word.info {
-            Grid(alignment: .topLeading, horizontalSpacing: 40, verticalSpacing: 14) {
-                GridRow {
-                    VStack(alignment: .leading, spacing: 12) {
-                        DetailSection("Translations") {
-                            Text(info.contextualTranslations.joined(separator: ", "))
-                                .font(.title3)
-                                .textSelection(.enabled)
-                        }
-                        if !info.note.isEmpty {
-                            DetailSection("Note") { Text(info.note).textSelection(.enabled) }
-                        }
-                        DetailSection("Sentence") {
-                            Text(info.fullSentenceTranslation).textSelection(.enabled)
-                        }
+        if let info = session.word.info {
+            Group {
+                // Side by side where there is room; stacked on a phone or a narrow split.
+                if sizeClass == .compact {
+                    VStack(alignment: .leading, spacing: 14) {
+                        meaning(info)
+                        reference(info)
                     }
-                    .frame(maxWidth: 560, alignment: .leading)
-                    VStack(alignment: .leading, spacing: 12) {
-                        DetailSection("Grammar") {
-                            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
-                                row("Part of speech", info.grammar.partOfSpeech)
-                                row("Initial form", info.grammar.originalInitialForm)
-                                row("Number", info.grammar.plurality)
-                                row("Person", info.grammar.person)
-                                row("Tense", info.grammar.tense)
-                                row("Case", info.grammar.grammaticalCase)
-                                row("Other", info.grammar.other)
-                            }
-                        }
-                        .frame(minWidth: 220, alignment: .leading)
-                        if let def = word.definition, !def.definition.isEmpty {
-                            DetailSection("Dictionary") {
-                                Text(def.definition).font(.callout).textSelection(.enabled)
-                            }
+                } else {
+                    Grid(alignment: .topLeading, horizontalSpacing: 40, verticalSpacing: 14) {
+                        GridRow {
+                            meaning(info).frame(maxWidth: 560, alignment: .leading)
+                            reference(info)
                         }
                     }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func meaning(_ info: WordInfo) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            DetailSection("Translations") {
+                Text(info.contextualTranslations.joined(separator: ", "))
+                    .font(.title3)
+                    .textSelection(.enabled)
+            }
+            if !info.note.isEmpty {
+                DetailSection("Note") { Text(info.note).textSelection(.enabled) }
+            }
+            DetailSection("Sentence") {
+                Text(info.fullSentenceTranslation).textSelection(.enabled)
+            }
+        }
+    }
+
+    private func reference(_ info: WordInfo) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            DetailSection("Grammar") {
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+                    row("Part of speech", info.grammar.partOfSpeech)
+                    row("Initial form", info.grammar.originalInitialForm)
+                    row("Number", info.grammar.plurality)
+                    row("Person", info.grammar.person)
+                    row("Tense", info.grammar.tense)
+                    row("Case", info.grammar.grammaticalCase)
+                    row("Other", info.grammar.other)
+                }
+            }
+            .frame(minWidth: 220, alignment: .leading)
+            if let def = session.word.definition, !def.definition.isEmpty {
+                DetailSection("Dictionary") {
+                    Text(def.definition).font(.callout).textSelection(.enabled)
+                }
+            }
         }
     }
 
@@ -367,3 +393,24 @@ struct AnyLabelStyle: LabelStyle {
         make(configuration)
     }
 }
+
+#if os(iOS)
+/// Opens the system dictionary for the word, as the web app does on iOS.
+private struct DictionaryButton: View {
+    let term: String
+    @State private var shown = false
+
+    var body: some View {
+        Button {
+            shown = true
+        } label: {
+            Image(systemName: "book")
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel("Show system dictionary")
+        .sheet(isPresented: $shown) {
+            DictionarySheet(term: term).ignoresSafeArea()
+        }
+    }
+}
+#endif

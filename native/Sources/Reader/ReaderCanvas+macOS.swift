@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 
 /// The reader's macOS input: mouse, keys, scroll, menus, cursors, and the
@@ -13,6 +14,8 @@ extension ReaderCanvas: NSMenuItemValidation {
     }
 
     var isResizingLive: Bool { inLiveResize }
+    /// How far outside a paragraph button a click still counts.
+    var controlSlop: CGFloat { 4 }
     var flipLayer: CALayer? { layer }
 
     override func layout() {
@@ -253,3 +256,4 @@ extension NSImage {
         return image
     }
 }
+#endif

@@ -1,4 +1,7 @@
 import Foundation
+#if os(iOS)
+import UIKit
+#endif
 import Observation
 
 @MainActor
@@ -49,6 +52,16 @@ final class SyncStore: CoreBound {
 
     func setEnabled(_ enabled: Bool) async {
         await run { try await $0.syncSetEnabled(enabled: enabled) }
+    }
+
+    /// The name other devices see when none was set yet. iOS has no host name
+    /// to derive one from (the core falls back to "iPad", also on a phone).
+    nonisolated static var suggestedDeviceName: String? {
+        #if os(iOS)
+        MainActor.assumeIsolated { UIDevice.current.name }
+        #else
+        nil
+        #endif
     }
 
     func setDeviceName(_ name: String) async {

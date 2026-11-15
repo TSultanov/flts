@@ -70,7 +70,7 @@ struct LibraryPage: View {
                 } primaryAction: { ids in
                     if ids.count == 1, let id = ids.first { open(id) }
                 }
-                .onDeleteCommand {
+                .onDeleteKey {
                     deleting = selection.compactMap(model.library.book)
                 }
                 .safeAreaInset(edge: .bottom) {
@@ -288,7 +288,7 @@ struct MoveBookSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 420)
+        .sheetSize(width: 420)
     }
 
     private var destinationLabel: String {

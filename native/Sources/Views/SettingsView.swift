@@ -10,6 +10,17 @@ struct SettingsView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
+        content
+            // Saves happen on every tab; a failure must show wherever it happened.
+            .overlay(alignment: .bottom) {
+                if let error = model.config.error {
+                    ErrorBanner(message: "Could not save: \(error)") { model.config.error = nil }
+                }
+            }
+    }
+
+    #if os(macOS)
+    private var content: some View {
         TabView(selection: $tab) {
             Form { TranslationSettings() }
                 .formStyle(.grouped)
@@ -36,13 +47,53 @@ struct SettingsView: View {
                 .tag(SettingsTab.storage)
         }
         .frame(width: 580, height: 560)
-        // Saves happen on every tab; a failure must show wherever it happened.
-        .overlay(alignment: .bottom) {
-            if let error = model.config.error {
-                ErrorBanner(message: "Could not save: \(error)") { model.config.error = nil }
+    }
+    #else
+    @Environment(\.dismiss) private var dismiss
+    @State private var path: [SettingsTab] = []
+
+    /// A sheet with one page per section. Spotify lyrics are macOS only.
+    private var content: some View {
+        NavigationStack(path: $path) {
+            List {
+                link(.translation, "Translation", "character.bubble")
+                link(.reading, "Reading", "textformat.size")
+                link(.sync, "Sync", "arrow.triangle.2.circlepath")
+                link(.anki, "Anki", "rectangle.stack")
+                link(.storage, "Storage", "internaldrive")
+            }
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+            .navigationDestination(for: SettingsTab.self) { tab in
+                Group {
+                    switch tab {
+                    case .translation: Form { TranslationSettings() }
+                    case .reading: Form { ReadingSettings() }
+                    case .sync: SyncSettings()
+                    case .anki: Form { AnkiSettings() }
+                    case .spotify, .storage: Form { StorageSettings() }
+                    }
+                }
+                .navigationTitle(tab.rawValue.capitalized)
+                .navigationBarTitleDisplayMode(.inline)
+            }
+        }
+        .onAppear {
+            // The library's sync status opens straight on the Sync page.
+            if tab == .sync {
+                path = [.sync]
+                tab = .translation
             }
         }
     }
+
+    private func link(_ tab: SettingsTab, _ title: String, _ symbol: String) -> some View {
+        NavigationLink(value: tab) { Label(title, systemImage: symbol) }
+    }
+    #endif
 }
 
 /// A text field that writes back on Return or when it loses focus, so the
@@ -466,7 +517,9 @@ struct StorageSettings: View {
                     .lineLimit(2)
                     .truncationMode(.middle)
             }
+            #if os(macOS)
             Button("Show in Finder") { Platform.revealLibrary(model.config.libraryRoot) }
+            #endif
         }
     }
 }
