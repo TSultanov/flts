@@ -109,23 +109,7 @@ private struct LibraryChrome: ViewModifier {
     func body(content: Content) -> some View {
         content
             .navigationTitle("Library")
-                .toolbar {
-                AppToolbarItems()
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Button {
-                        creatingFolder = true
-                    } label: {
-                        Label("New Folder", systemImage: "folder.badge.plus")
-                    }
-                        .help("New Folder")
-                    Button {
-                        model.showImport = true
-                    } label: {
-                        Label("Import", systemImage: "plus")
-                    }
-                        .help("Import a book")
-                }
-            }
+                .toolbar { LibraryToolbarItems(newFolder: { creatingFolder = true }) }
                 .sheet(isPresented: Binding(get: { !moving.isEmpty }, set: { if !$0 { moving = [] } })) {
                 MoveBookSheet(books: moving)
             }
@@ -147,6 +131,32 @@ private struct LibraryChrome: ViewModifier {
             } message: {
                 Text("The book and its translations are removed from every synced device.")
             }
+    }
+}
+
+/// The library's toolbar. Also shown while the library opens, so the toolbar
+/// is not rebuilt when it does.
+struct LibraryToolbarItems: ToolbarContent {
+    var enabled = true
+    let newFolder: () -> Void
+    @Environment(AppModel.self) private var model
+
+    var body: some ToolbarContent {
+        AppToolbarItems()
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button(action: newFolder) {
+                Label("New Folder", systemImage: "folder.badge.plus")
+            }
+            .help("New Folder")
+            .disabled(!enabled)
+            Button {
+                model.showImport = true
+            } label: {
+                Label("Import", systemImage: "plus")
+            }
+            .help("Import a book")
+            .disabled(!enabled)
+        }
     }
 }
 

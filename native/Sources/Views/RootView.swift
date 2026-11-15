@@ -8,6 +8,8 @@ struct RootView: View {
         case .starting:
             ProgressView("Opening library…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .navigationTitle("Library")
+                .toolbar { LibraryToolbarItems(enabled: false, newFolder: {}) }
         case .failed(let message):
             ContentUnavailableView {
                 Label("FLTS could not start", systemImage: "exclamationmark.triangle")

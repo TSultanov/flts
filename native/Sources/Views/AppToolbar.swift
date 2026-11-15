@@ -26,9 +26,7 @@ struct AppToolbarItems: ToolbarContent {
                 .accessibilityLabel(syncLabel)
             }
             // As in the web app: hidden while Anki isn't running.
-            if model.config.config?.ankiSyncEnabled == true, model.config.isConfigured,
-                model.anki.status.state != .unreachable
-            {
+            if model.config.config?.ankiSyncEnabled == true, model.config.isConfigured, model.anki.reachable {
                 Button {
                     Task { await model.anki.syncNow() }
                 } label: {

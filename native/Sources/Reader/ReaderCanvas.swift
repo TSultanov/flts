@@ -430,7 +430,8 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
             guard text.firstLineTop(of: pid) == line.top else { continue }
             let translating = delegate?.readerTranslationProgress(self, paragraphId: pid) != nil
             guard translating || !(text.paragraphs[pid]?.translated ?? true) else { continue }
-            let y = line.bottom - text.typography.fontSize * 1.1 - size / 2 + dy
+            // Centred on the first line's lowercase letters.
+            let y = line.bottom - text.typography.fontSize * 0.55 - size / 2 + dy
             out.append((pid, CGRect(x: origin.x - size - 10, y: y, width: size, height: size)))
         }
         return out

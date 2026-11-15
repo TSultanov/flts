@@ -70,12 +70,15 @@ final class FLTSScreenshotTour: XCTestCase {
     func testLaunchStress() throws {
         guard let dir = ProcessInfo.processInfo.environment["FLTS_UITEST_STRESS_DIR"] else { throw XCTSkip("stress only") }
         var crashes = 0
-        for _ in 0..<40 {
+        for _ in 0..<60 {
             let app = launch(dir: dir)
-            if !app.staticTexts["Lluvia en la ciudad"].firstMatch.appears(timeout: 8) { crashes += 1 }
+            // Past the first second after the library shows, where it has died.
+            let shown = app.staticTexts["Lluvia en la ciudad"].firstMatch.appears(timeout: 8)
+            pause(1.2)
+            if !shown || !app.windows.firstMatch.exists { crashes += 1 }
             app.terminate()
         }
-        print("STRESS-CRASHES \(crashes)/40")
+        print("STRESS-CRASHES \(crashes)/60")
         XCTAssertEqual(crashes, 0)
     }
 

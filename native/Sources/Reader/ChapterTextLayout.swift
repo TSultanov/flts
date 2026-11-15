@@ -8,7 +8,7 @@ extension NSAttributedString.Key {
 
 struct ReaderTypography: Equatable {
     var fontSize: CGFloat = 18
-    var lineHeightMultiple: CGFloat = 2
+    var lineHeightMultiple: CGFloat = 1.75
     var paragraphSpacingEm: CGFloat = 0.6
     var hyphenate = true
     var justify = true
