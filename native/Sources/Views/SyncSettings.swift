@@ -19,7 +19,7 @@ struct SyncSettings: View {
         Form {
             Section {
                 if config.config?.syncEnabled != true {
-                    Text("FLTS syncs your library with your other devices through a built-in Syncthing engine. If you run Syncthing separately on this Mac, stop it before enabling sync.")
+                    Text("FLTS syncs your library with your other devices through a built-in Syncthing engine. If you run Syncthing separately on this device, stop it before enabling sync.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -64,7 +64,7 @@ struct SyncSettings: View {
                                     .accessibilityLabel("Pairing code")
                             }
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("Scan this code on your iPad or phone, or enter this device ID there:")
+                                Text("Scan this code on your other device, or enter this device ID there:")
                                     .foregroundStyle(.secondary)
                                 Text(device.deviceId)
                                     .font(.system(.caption, design: .monospaced))
@@ -81,11 +81,19 @@ struct SyncSettings: View {
                                 Label("Scan Another Device's Code", systemImage: "qrcode.viewfinder")
                             }
                             .sheet(isPresented: $scanning) {
-                                PairingScanner { payload in addId = payload }
+                                PairingScanner { payload in
+                                    if let parsed = SyncStore.parsePairing(payload) {
+                                        addId = parsed.deviceId
+                                        if let name = parsed.name, !name.isEmpty { addName = name }
+                                    } else {
+                                        addId = payload
+                                    }
+                                }
                             }
                         }
                         #endif
                         TextField("Other device's ID or pairing code", text: $addId)
+                            .literalEntry()
                         TextField("Its name", text: $addName)
                         HStack {
                             Spacer()
@@ -142,7 +150,14 @@ struct SyncSettings: View {
 
             if let webUI {
                 Section {
+                    #if os(macOS)
                     Link("Open the Syncthing web UI", destination: webUI)
+                    #else
+                    // Opening it would suspend this app, which serves the page.
+                    LabeledContent("Syncthing web UI") {
+                        Text(webUI.absoluteString).font(.caption.monospaced()).textSelection(.enabled)
+                    }
+                    #endif
                 } footer: {
                     Text("For diagnosing sync; FLTS manages these settings itself.")
                 }
@@ -177,7 +192,7 @@ struct SyncSettings: View {
             }
             Button("Cancel", role: .cancel) { removing = nil }
         } message: {
-            Text("It has to be paired again to sync with this Mac.")
+            Text("It has to be paired again to sync with this device.")
         }
         .confirmationDialog("New sync identity", isPresented: $confirmReset) {
             Button("Give This Device a New Identity", role: .destructive) {

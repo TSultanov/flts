@@ -32,6 +32,7 @@ struct ImportSheet: View {
             }
         }
         .sheetSize(width: 560, height: 520)
+        .interactiveDismissDisabled()
     }
 }
 
@@ -193,6 +194,8 @@ private struct TextImport: View {
             TextField("Title", text: $title)
                 .textFieldStyle(.roundedBorder)
             TextEditor(text: $text)
+                // A foreign-language text: not for autocorrect.
+                .literalEntry()
                 .font(.system(.body, design: .serif))
                 .scrollContentBackground(.hidden)
                 .padding(4)
@@ -271,6 +274,7 @@ struct OnboardingView: View {
             }
             Text("Pick the language you want translations in and a translation provider.")
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
             Form {
                 TranslationSettings(essentialsOnly: true)
             }

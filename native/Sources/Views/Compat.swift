@@ -42,7 +42,30 @@ extension View {
         #if os(macOS)
         background(.bar)
         #else
-        background(Color(uiColor: .secondarySystemBackground))
+        // Under the notch side in landscape and the home indicator too.
+        background { Color(uiColor: .secondarySystemBackground).ignoresSafeArea(edges: [.horizontal, .bottom]) }
+        #endif
+    }
+
+    /// For IDs, addresses and foreign text: iOS must not correct or capitalise them.
+    @ViewBuilder
+    func literalEntry(url: Bool = false) -> some View {
+        #if os(macOS)
+        self
+        #else
+        autocorrectionDisabled()
+            .textInputAutocapitalization(.never)
+            .keyboardType(url ? .URL : .default)
+        #endif
+    }
+
+    /// A finger-sized target on iOS for a small icon button.
+    @ViewBuilder
+    func touchTarget() -> some View {
+        #if os(macOS)
+        self
+        #else
+        frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
         #endif
     }
 

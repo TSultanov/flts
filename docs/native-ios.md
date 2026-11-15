@@ -4,9 +4,10 @@ The SwiftUI app in `native/` also builds for iOS, as the `FLTS-iOS` target of
 `native/FLTS.xcodeproj` (generated from `native/project.yml`). It shares the
 macOS app's sources; see `docs/native-macos.md` for the architecture, the Rust
 core and the bindings. It replaces the Tauri iOS app: same bundle id
-(`com.TS.FLTS`), same data directory inside the app's container, same version
-and build number scheme, so installing it over the Tauri app keeps the
-library, settings and sync identity.
+(`com.TS.FLTS`), same data directory inside the app's container, the same
+version with a higher build number (101 against the Tauri app's 100), so
+installing it over the Tauri app keeps the library, settings and sync
+identity. It needs iOS 18; the Tauri app ran on iOS 15.
 
 ## What differs from macOS
 
@@ -14,10 +15,14 @@ library, settings and sync identity.
   stack. Settings is a sheet with a page per section instead of a Settings
   window; there are no menus. Coming back to the foreground wakes sync.
 - **Reader input** (`Reader/ReaderCanvas+iOS.swift`): a tap selects a word and
-  shows its translation, a swipe turns one spread, a tap beside the text turns
-  the page, a long press opens a menu (Look Up, Copy, Translate). A hardware
-  keyboard pages with the arrow keys and Space; W and C toggle the word
-  details and the chapter list. Layout, paging, drawing and hit testing are
+  shows its translation (a near miss still counts: short words are narrower
+  than a fingertip), a swipe turns one spread, a tap in the margin turns the
+  page, a long press opens a menu (Look Up, Copy Word/Sentence/Paragraph,
+  Translate). A hardware keyboard pages with the arrow keys and Space; W and
+  C toggle the word details and the chapter list. Those keys are shortcuts on
+  the reader screen, not a first responder: as one, the reader made the
+  software keyboard come up whenever a menu opened. Text size and appearance
+  are in the reader's toolbar menu. Layout, paging, drawing and hit testing are
   the shared `ReaderCanvas`.
 - **Layout**: two pages side by side when the reader is wide enough (an iPad
   in landscape), one otherwise. At compact width (an iPhone, or an iPad in a

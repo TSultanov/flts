@@ -108,13 +108,15 @@ struct CommitField: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        Group {
+        labelled {
             if secure {
                 SecureField(title, text: $draft, prompt: prompt.map(Text.init))
             } else {
                 TextField(title, text: $draft, prompt: prompt.map(Text.init))
             }
         }
+        // Keys, addresses and IDs: never corrected or capitalised.
+        .literalEntry(url: title.localizedCaseInsensitiveContains("address") || title.localizedCaseInsensitiveContains("endpoint"))
         .focused($focused)
         .onSubmit { save() }
         .onChange(of: focused) { _, isFocused in if !isFocused { save() } }
@@ -125,6 +127,17 @@ struct CommitField: View {
 
     private func save() {
         if draft != value { commit(draft) }
+    }
+
+    /// An iOS form field shows only its placeholder, so a filled one would
+    /// have no label; the Mac's form labels fields itself.
+    @ViewBuilder
+    private func labelled(@ViewBuilder _ field: () -> some View) -> some View {
+        #if os(macOS)
+        field()
+        #else
+        LabeledContent(title) { field().multilineTextAlignment(.trailing) }
+        #endif
     }
 }
 

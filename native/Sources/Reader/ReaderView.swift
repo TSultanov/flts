@@ -24,6 +24,7 @@ final class ReaderControls {
     func next() { canvas?.nextSpread() }
     func previous() { canvas?.previousSpread() }
     func first() { canvas?.go(toPage: 0) }
+    func last() { canvas.map { $0.go(toPage: $0.pageCount - 1) } }
     func focus() { canvas?.takeKeys() }
 }
 

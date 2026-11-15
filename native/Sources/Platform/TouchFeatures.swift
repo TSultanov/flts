@@ -1,4 +1,5 @@
 #if os(iOS)
+import AVFoundation
 import SwiftUI
 import UIKit
 import VisionKit
@@ -24,10 +25,15 @@ struct PairingScanner: View {
         DataScannerViewController.isSupported
     }
 
+    /// nil until the camera permission is known.
+    @State private var allowed: Bool?
+
     var body: some View {
         NavigationStack {
             Group {
-                if DataScannerViewController.isAvailable {
+                if allowed == nil {
+                    ProgressView()
+                } else if allowed == true, DataScannerViewController.isAvailable {
                     Scanner { code in
                         found(code)
                         dismiss()
@@ -39,6 +45,8 @@ struct PairingScanner: View {
                         description: Text("Allow camera access for FLTS in Settings, or enter the device ID by hand."))
                 }
             }
+            // Ask first: before the answer the scanner reports itself unavailable.
+            .task { allowed = await AVCaptureDevice.requestAccess(for: .video) }
             .navigationTitle("Scan Pairing Code")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

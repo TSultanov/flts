@@ -154,6 +154,9 @@ struct BookReaderScreen: View {
         // The book names the window; the chapter is the subtitle when there is one to name.
         .bookTitle(model.library.book(session.book.bookId)?.title ?? "", chapter: chapterTitle)
         .toolbar { toolbar }
+        #if os(iOS)
+        .background { ReaderKeys(controls: session.controls) }
+        #endif
         .focusedSceneValue(\.readerControls, session.controls)
         .focusedSceneValue(
             \.bookActions,
@@ -198,6 +201,9 @@ struct BookReaderScreen: View {
                     ? "Translate the \(chapter.untranslatedCount) untranslated paragraphs in this chapter"
                     : "Waiting for chapter summaries…")
             }
+            #if os(iOS)
+            ReadingMenu()
+            #endif
         }
     }
 }
@@ -222,3 +228,70 @@ struct ErrorBanner: View {
         .padding()
     }
 }
+
+#if os(iOS)
+/// Text size and appearance from the reader (the Mac has menu commands).
+private struct ReadingMenu: View {
+    @AppStorage(Appearance.key, store: AppDefaults.store) private var appearance = Appearance.system
+    private let prefs = ReaderPreferences.shared
+
+    var body: some View {
+        Menu {
+            ControlGroup {
+                Button {
+                    prefs.fontSize -= 1
+                } label: {
+                    Label("Smaller Text", systemImage: "textformat.size.smaller")
+                }
+                Button {
+                    prefs.fontSize += 1
+                } label: {
+                    Label("Larger Text", systemImage: "textformat.size.larger")
+                }
+            }
+            Button("Default Size") { prefs.fontSize = ReaderPreferences.defaultFontSize }
+            Picker("Appearance", selection: $appearance) {
+                ForEach(Appearance.allCases) { Text($0.title).tag($0) }
+            }
+        } label: {
+            Label("Text Size and Appearance", systemImage: "textformat.size")
+        }
+        // Stays open while the size is stepped.
+        .menuActionDismissBehavior(.disabled)
+    }
+}
+#endif
+
+#if os(iOS)
+/// A hardware keyboard's reader keys, as shortcuts on invisible buttons, so
+/// nothing has to hold keyboard focus.
+private struct ReaderKeys: View {
+    let controls: ReaderControls
+
+    var body: some View {
+        Group {
+            key(.rightArrow) { controls.next() }
+            key(.downArrow) { controls.next() }
+            key(.pageDown) { controls.next() }
+            key(.space) { controls.next() }
+            key(.leftArrow) { controls.previous() }
+            key(.upArrow) { controls.previous() }
+            key(.pageUp) { controls.previous() }
+            key(.space, .shift) { controls.previous() }
+            key(.home) { controls.first() }
+            key(.end) { controls.last() }
+            key("w") { controls.toggleWordPanel?() }
+            key("c") { controls.toggleChapters?() }
+            key(.escape) {
+                if controls.chaptersShown { controls.hideChapters?() } else { _ = controls.collapseWordPanel?() }
+            }
+        }
+        .opacity(0)
+        .accessibilityHidden(true)
+    }
+
+    private func key(_ key: KeyEquivalent, _ modifiers: EventModifiers = [], _ action: @escaping () -> Void) -> some View {
+        Button("", action: action).keyboardShortcut(key, modifiers: modifiers)
+    }
+}
+#endif

@@ -9,6 +9,14 @@ struct LibraryPage: View {
     /// The list takes the keyboard on arrival, so arrows and Return work at once.
     @FocusState private var listFocused: Bool
 
+    /// On the Mac one selected book has its menu and Delete key; on iOS
+    /// selecting is edit mode, where even one book needs the bar.
+    #if os(macOS)
+    private static let selectionBarThreshold = 1
+    #else
+    private static let selectionBarThreshold = 0
+    #endif
+
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
@@ -74,7 +82,7 @@ struct LibraryPage: View {
                     deleting = selection.compactMap(model.library.book)
                 }
                 .safeAreaInset(edge: .bottom) {
-                    if selection.count > 1 {
+                    if selection.count > Self.selectionBarThreshold {
                         SelectionBar(
                             count: selection.count,
                             move: { moving = selection.compactMap(model.library.book) },
@@ -271,12 +279,20 @@ struct MoveBookSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             Text(books.count == 1 ? "Move “\(books[0].title)”" : "Move \(books.count) books")
                 .font(.headline)
-            Picker("Folder", selection: $target) {
-                ForEach(model.library.tree.allPaths, id: \.self) { path in
-                    Text(path.isEmpty ? "Library" : path.joined(separator: " › ")).tag(path)
-                }
+            #if os(macOS)
+            folderPicker
+            #else
+            // Outside a form, an iOS picker shows only its value.
+            HStack {
+                Text("Folder")
+                Spacer()
+                folderPicker
             }
+            #endif
             TextField("Or a new folder inside it", text: $newFolder)
+                #if os(iOS)
+                .textFieldStyle(.roundedBorder)
+                #endif
             Text("Move to: " + destinationLabel)
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -295,6 +311,14 @@ struct MoveBookSheet: View {
         }
         .padding(20)
         .sheetSize(width: 420)
+    }
+
+    private var folderPicker: some View {
+        Picker("Folder", selection: $target) {
+            ForEach(model.library.tree.allPaths, id: \.self) { path in
+                Text(path.isEmpty ? "Library" : path.joined(separator: " › ")).tag(path)
+            }
+        }
     }
 
     private var destinationLabel: String {

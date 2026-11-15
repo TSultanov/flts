@@ -12,6 +12,12 @@ struct WordPanel: View {
     @State private var contentHeight: Double = 0
 
     static let barHeight: CGFloat = 44
+    #if os(macOS)
+    static let handleHeight: CGFloat = 10
+    #else
+    /// Tall enough to catch a finger.
+    static let handleHeight: CGFloat = 24
+    #endif
 
     var body: some View {
         GeometryReader { geo in
@@ -49,7 +55,7 @@ struct WordPanel: View {
             .fill(.tertiary)
             .frame(width: 36, height: 4)
             .frame(maxWidth: .infinity)
-            .frame(height: 10)
+            .frame(height: Self.handleHeight)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture()
@@ -111,6 +117,7 @@ private struct WordHeader: View {
             } label: {
                 Image(systemName: "chevron.down")
                     .frame(width: 20, height: 20)
+                    .touchTarget()
             }
             .buttonStyle(.borderless)
             .help("Hide word details (W)")
@@ -131,6 +138,7 @@ private struct WordBar: View {
             if let info = word.info {
                 Text(info.original)
                     .font(.system(.title3, design: .serif).weight(.semibold))
+                    .lineLimit(1)
                     .textSelection(.enabled)
                 if !info.grammar.originalInitialForm.isEmpty,
                     info.grammar.originalInitialForm != info.original.lowercased()
@@ -178,9 +186,19 @@ private struct WordBar: View {
                 Text("This paragraph is not translated yet.")
                     .foregroundStyle(.secondary)
                 Spacer()
+            } else if let chapter = session.chapter, chapter.loaded, chapter.untranslatedCount > 0,
+                !session.book.canTranslate(chapter.chapterId)
+            {
+                // Tooltips say this on the Mac; a touch screen has none.
+                ProgressView().controlSize(.small)
+                Text("Preparing this chapter for translation…")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
             } else {
                 Text("Select a word to show its translation")
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 Spacer()
             }
             Button {
@@ -188,6 +206,7 @@ private struct WordBar: View {
             } label: {
                 Image(systemName: "chevron.up")
                     .frame(width: 20, height: 20)
+                    .touchTarget()
             }
             .buttonStyle(.borderless)
             .disabled(word.info == nil)
@@ -195,6 +214,11 @@ private struct WordBar: View {
             .accessibilityLabel("Show word details")
         }
         .padding(.horizontal, 16)
+        #if os(iOS)
+        // The whole bar opens the details, not only its chevron.
+        .contentShape(Rectangle())
+        .onTapGesture { if word.info != nil { expanded = true } }
+        #endif
     }
 }
 
@@ -404,7 +428,7 @@ private struct DictionaryButton: View {
         Button {
             shown = true
         } label: {
-            Image(systemName: "book")
+            Image(systemName: "book").touchTarget()
         }
         .buttonStyle(.borderless)
         .accessibilityLabel("Show system dictionary")

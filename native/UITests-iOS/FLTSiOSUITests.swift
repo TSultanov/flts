@@ -36,7 +36,9 @@ final class FLTSiOSTour: XCTestCase {
     }
 
     private func shot(_ app: XCUIApplication, _ name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        // The screen, not the app: in landscape the app's own capture is cropped.
+        _ = app
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
@@ -223,6 +225,29 @@ final class FLTSiOSTour: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
         pause(1.5)
         XCTAssertTrue(until(20) { page.label.contains(" of ") })
+
+        // Text size from the reader's own menu.
+        let sized = page.label
+        shot(app, "3-pre-menu")
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "a keyboard is up in the reader")
+        app.buttons["Text Size and Appearance"].firstMatch.tap()
+        let larger = app.buttons["Larger Text"].firstMatch
+        XCTAssertTrue(larger.appears(timeout: 5), "no text size menu in the reader")
+        larger.tap()
+        larger.tap()
+        pause()
+        shot(app, "3-text-menu")
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "a keyboard came up with the reading menu")
+        app.buttons["Default Size"].firstMatch.tap()
+        page.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.97)).tap()
+        XCTAssertTrue(until(10) { page.label == sized }, "the default size did not come back: \(sized) → \(page.label)")
+
+        // A hardware keyboard's arrow keys page too.
+        let keyed = page.label
+        app.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertTrue(until(3) { page.label != keyed }, "the right arrow key did not turn the page")
+        app.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertTrue(until(3) { page.label == keyed }, "the left arrow key did not turn back")
 
         // One swipe turns one spread, either way.
         let before = page.label
