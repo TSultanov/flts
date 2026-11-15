@@ -134,6 +134,10 @@ on) it lands on the right page of that paragraph.
   `FLTS_UITEST_LONG_EPUB` (a book from `scripts/fixtures/gen-long-epub.py`) a
   check that the chapter list is as quick on a 200-page chapter as on a short
   one and never re-pages it.
+- `make test-macos-native-ui-translate` (about 15 s plus the build) starts the
+  e2e sims and, on screen, imports a text, translates its chapter, reads a
+  word, translates the paragraph again with a model picked from the list and
+  adds an Anki card. No real service is called.
 - A copy of a real library can be checked without touching the original:
   copy `config.json` and `library/` somewhere, turn `syncEnabled` and
   `ankiSyncEnabled` off in the copy, and set `FLTS_GEMINI_BASE_URL` to a dead

@@ -172,6 +172,81 @@ final class FLTSScreenshotTour: XCTestCase {
         app.terminate()
     }
 
+    /// Translation end to end against the e2e sims (scripts/ui-translate.sh):
+    /// import a text, translate its chapter, read a word, translate the
+    /// paragraph again with a chosen model, and add an Anki card.
+    func testTranslateWithSims() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let dir = env["FLTS_UITEST_SIM_DIR"], let textFile = env["FLTS_UITEST_SIM_TEXT"], let llm = env["FLTS_UITEST_SIM_LLM"],
+            !dir.isEmpty
+        else { throw XCTSkip("sims only") }
+        let paragraphs = try String(contentsOfFile: textFile, encoding: .utf8).components(separatedBy: "\n\n").prefix(2)
+        let app = launch(dir: dir, env: ["FLTS_GEMINI_BASE_URL": llm])
+        let window = app.windows.firstMatch
+        XCTAssertTrue(app.staticTexts["Lluvia en la ciudad"].firstMatch.appears(timeout: 15))
+
+        app.typeKey("o", modifierFlags: .command)
+        let sheet = app.sheets.firstMatch
+        XCTAssertTrue(sheet.appears(timeout: 5))
+        sheet.radioButtons["Text"].click()
+        sheet.textFields.firstMatch.click()
+        sheet.typeText("Texto de prueba")
+        sheet.textViews.firstMatch.click()
+        sheet.typeText(paragraphs.joined(separator: "\n\n"))
+        sheet.buttons["Import"].click()
+        let book = app.staticTexts["Texto de prueba"].firstMatch
+        XCTAssertTrue(book.appears(timeout: 10), "the text was not imported")
+        pause(0.3)
+        book.doubleClick()
+        let page = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Page'")).firstMatch
+        XCTAssertTrue(page.appears(timeout: 10))
+
+        // Translate the chapter from the toolbar; the button goes once nothing is left.
+        let translate = app.buttons["Translate Chapter"].firstMatch
+        XCTAssertTrue(translate.appears(timeout: 5), "no Translate Chapter on an untranslated text")
+        XCTAssertTrue(until(10) { translate.isEnabled }, "Translate Chapter stayed disabled")
+        translate.click()
+        XCTAssertTrue(until(30) { !translate.exists }, "the chapter was not translated")
+        shot(window, "t-1-translated")
+
+        // A word of it: its translation shows in the bar and in the details.
+        page.coordinate(withNormalizedOffset: CGVector(dx: 0.095, dy: 0.088)).click()
+        waitWord(app)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "value BEGINSWITH 'en-'")).firstMatch.appears(timeout: 3),
+            "the word's translation is not shown")
+        app.typeKey("w", modifierFlags: [])
+        XCTAssertTrue(app.buttons["Hide word details"].firstMatch.appears(timeout: 3))
+        pause(0.2)
+        shot(window, "t-2-word")
+
+        // Translate the paragraph again, with a model picked from the list.
+        let again = app.buttons["Translate Again"].firstMatch
+        XCTAssertTrue(again.appears(timeout: 3))
+        let models = app.popUpButtons.firstMatch
+        if models.exists {
+            models.click()
+            let items = models.menuItems
+            XCTAssertTrue(items.firstMatch.appears(timeout: 3), "the model list did not open")
+            items.element(boundBy: items.count > 1 ? 1 : 0).click()
+        }
+        again.click()
+        XCTAssertTrue(until(20) { again.isEnabled }, "translating again never finished")
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "value BEGINSWITH 'Translation failed'")).firstMatch.exists,
+            "translating again failed")
+        // The word is still there afterwards.
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "value BEGINSWITH 'en-'")).firstMatch.appears(timeout: 5))
+
+        // An Anki card for the word, in the sim.
+        let card = app.buttons["Add to Anki"].firstMatch
+        XCTAssertTrue(card.appears(timeout: 5), "no Add to Anki with Anki configured")
+        card.click()
+        XCTAssertTrue(until(10) { !card.exists }, "the card was not created")
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "value CONTAINS[c] 'anki'")).firstMatch.exists, "an Anki error is shown")
+        pause(0.2)
+        shot(window, "t-3-after")
+        app.terminate()
+    }
+
     func testLaunchStress() throws {
         guard let dir = ProcessInfo.processInfo.environment["FLTS_UITEST_STRESS_DIR"] else { throw XCTSkip("stress only") }
         var crashes = 0

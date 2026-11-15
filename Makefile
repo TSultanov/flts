@@ -30,7 +30,7 @@ IOS_IPA := $(TAURI_DIR)/gen/apple/build/arm64/$(PRODUCT).ipa
 .PHONY: all build dev deps check-deps hooks format \
 	build-macos build-ios build-android \
 	install-macos install-ios install-android \
-	build-macos-native install-macos-native test-macos-native test-macos-native-ui test-macos-native-ui-quick \
+	build-macos-native install-macos-native test-macos-native test-macos-native-ui test-macos-native-ui-quick test-macos-native-ui-translate \
 	install\ macos install\ ios install\ android \
 	help
 
@@ -77,6 +77,9 @@ test-macos-native-ui: ## run the full native UI tour on a fresh seeded library (
 
 test-macos-native-ui-quick: ## the core library and reader flow only, for routine runs
 	QUICK=1 "$(NATIVE)/scripts/ui-tests.sh"
+
+test-macos-native-ui-translate: ## translate, retranslate and add an Anki card on screen, against the e2e sims
+	"$(NATIVE)/scripts/ui-translate.sh"
 
 install-macos-native: build-macos-native ## replace /Applications/FLTS.app with the native app
 	@if pgrep -xq "$(PRODUCT)"; then echo "quit $(PRODUCT) first: both apps share one library"; exit 1; fi
