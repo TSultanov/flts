@@ -30,6 +30,7 @@ IOS_IPA := $(TAURI_DIR)/gen/apple/build/arm64/$(PRODUCT).ipa
 .PHONY: all build dev deps check-deps hooks format \
 	build-macos build-ios build-android \
 	install-macos install-ios install-android \
+	build-ios-native install-ios-native \
 	build-macos-native install-macos-native test-macos-native test-macos-native-ui test-macos-native-ui-quick test-macos-native-ui-translate test-ios-native-ui test-ios-native-ui-services \
 	install\ macos install\ ios install\ android \
 	help
@@ -124,6 +125,24 @@ install-ios: build-ios ## install on a connected iPhone/iPad
 	fi; \
 	echo ">> installing on $$DEVICE"; \
 	xcrun devicectl device install app --device "$$DEVICE" "$$APP"
+
+NATIVE_IOS_APP := $(NATIVE)/build/DerivedData-iOS-device/Build/Products/Release-iphoneos/$(PRODUCT).app
+
+build-ios-native: ## build the native SwiftUI iOS app for devices (Release, signed with the project's team)
+	cd "$(NATIVE)" && xcodegen generate && xcodebuild -project FLTS.xcodeproj -scheme FLTS-iOS \
+		-configuration Release -destination 'generic/platform=iOS' \
+		-derivedDataPath build/DerivedData-iOS-device -allowProvisioningUpdates build
+
+install-ios-native: build-ios-native ## install the native app on a connected iPhone/iPad (replaces the Tauri app, keeps its data)
+	@set -euo pipefail; \
+	test -d "$(NATIVE_IOS_APP)" || { echo "missing app: $(NATIVE_IOS_APP)"; exit 1; }; \
+	if [ -n "$${IOS_DEVICE:-}" ]; then \
+		DEVICE="$$IOS_DEVICE"; \
+	else \
+		DEVICE="$$(xcrun devicectl list devices --json-output - 2>/dev/null | python3 -c 'import json,sys; data=json.load(sys.stdin); devices=data.get("result",{}).get("devices",[]); booted=[d for d in devices if d.get("deviceProperties",{}).get("bootState")=="booted"]; pool=booted or devices; (not pool) and sys.exit("no connected iOS device found (pair in Xcode > Devices and Simulators)"); d=pool[0]; print(d.get("deviceProperties",{}).get("name") or d.get("identifier"))')"; \
+	fi; \
+	echo ">> installing the native app on $$DEVICE"; \
+	xcrun devicectl device install app --device "$$DEVICE" "$(NATIVE_IOS_APP)"
 
 install-android: ## build + adb install on a connected Android device
 	cd "$(SITE)" && ./build-android.sh --install
