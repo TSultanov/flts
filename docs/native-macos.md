@@ -130,7 +130,10 @@ on) it lands on the right page of that paragraph.
   polling, since XCTest's own waits re-check only once a second. The app runs
   with `FLTS_NO_ANIMATIONS`, since the runner waits out every animation. The
   tour also asserts that showing the chapters does not resize the reader, and
-  `FLTS_UITEST_STRESS_DIR` enables a 60-launch stress test. The window
+  `FLTS_UITEST_STRESS_DIR` enables a 60-launch stress test, and with
+  `FLTS_UITEST_LONG_EPUB` (a book from `scripts/fixtures/gen-long-epub.py`) a
+  check that the chapter list is as quick on a 200-page chapter as on a short
+  one and never re-pages it. The window
   size comes from `FLTS_WINDOW_SIZE`, which the app applies itself: a frame
   pinned by a launch argument made it die at launch in AppKit's toolbar layout.
 - Reading position holds across a resize round trip

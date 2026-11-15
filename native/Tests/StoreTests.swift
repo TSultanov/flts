@@ -512,13 +512,10 @@ extension NSView {
         let paragraphs = chapter()
         let first = await open(nil, paragraphs)
         guard first.columns == 2 else { return }
-        first.go(toPage: 4, animated: false)
         var canvas = first
-        // Find a saved position that reopens on an odd page.
-        for page in stride(from: 2, to: first.pageCount, by: 2) {
-            first.go(toPage: page, animated: false)
-            guard let saved = first.currentAnchor() else { continue }
-            let reopened = await open(saved, paragraphs)
+        // A position from another device (a paragraph, no line) can land on any page.
+        for pid in 5..<110 {
+            let reopened = await open(ReadingAnchor(paragraphId: pid, pageOffset: 0), paragraphs)
             if reopened.spreadStart % 2 == 1 {
                 canvas = reopened
                 break
@@ -534,6 +531,14 @@ extension NSView {
             if canvas.spreadStart == before { break }
         }
         #expect(seen.contains(0), "paging back did not reach the first page")
+        // The pairing must really have been odd, or this checked nothing.
+        #expect(canvas.spreadStart == -1, "no saved position reopened on an odd page")
+        if let path = ProcessInfo.processInfo.environment["FLTS_TEST_RENDER"], !path.isEmpty,
+            let rep = canvas.bitmapImageRepForCachingDisplay(in: canvas.bounds)
+        {
+            canvas.cacheDisplay(in: canvas.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+        }
     }
 
     /// Saving and reopening must land on the same top line, from any page.

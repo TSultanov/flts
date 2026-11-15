@@ -70,6 +70,65 @@ final class FLTSScreenshotTour: XCTestCase {
         XCTAssertTrue(until(3) { page.label != before }, "arrow key ignored \(context)")
     }
 
+    /// A book-sized chapter (`FLTS_UITEST_LONG_EPUB`, see gen-long-epub.py), with
+    /// real animations: the chapter list must come and go without the reader
+    /// being resized or re-paged, and as quickly as on a short book.
+    func testLongBookChapters() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let dir = env["FLTS_UITEST_STRESS_DIR"], let epub = env["FLTS_UITEST_LONG_EPUB"], !epub.isEmpty else {
+            throw XCTSkip("long book only")
+        }
+        let app = launch(dir: dir, animations: true)
+        XCTAssertTrue(app.staticTexts["Lluvia en la ciudad"].firstMatch.appears(timeout: 15))
+        app.typeKey("o", modifierFlags: .command)
+        app.buttons["Choose EPUB…"].firstMatch.click()
+        pause(1)
+        app.typeKey("g", modifierFlags: [.command, .shift])
+        pause(0.5)
+        app.typeText(epub + "\r")
+        pause(0.5)
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(app.sheets.firstMatch.checkBoxes.firstMatch.appears(timeout: 20))
+        app.typeKey(.return, modifierFlags: [])
+        let long = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Novela larga' OR value CONTAINS 'Novela larga'")).firstMatch
+        XCTAssertTrue(long.appears(timeout: 30), "the long book was not imported")
+
+        func toggleTimes(_ title: XCUIElement) -> [Double] {
+            // Once the import sheet (animated here) is out of the way.
+            pause(1.5)
+            title.doubleClick()
+            let page = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Page'")).firstMatch
+            XCTAssertTrue(page.appears(timeout: 30))
+            // The whole chapter has been laid out once the page count is known.
+            XCTAssertTrue(until(60) { page.label.contains(" of ") }, "the chapter never finished laying out")
+            let frame = page.frame
+            let label = page.label
+            var times: [Double] = []
+            for _ in 0..<4 {
+                var start = Date()
+                app.typeKey("c", modifierFlags: [])
+                XCTAssertTrue(until(5) { app.outlines.firstMatch.exists })
+                times.append(Date().timeIntervalSince(start))
+                XCTAssertEqual(page.frame, frame, "showing the chapters resized the reader")
+                start = Date()
+                app.typeKey(.escape, modifierFlags: [])
+                XCTAssertTrue(until(5) { !app.outlines.firstMatch.exists })
+                times.append(Date().timeIntervalSince(start))
+            }
+            XCTAssertEqual(page.label, label, "toggling the chapters re-paged the chapter")
+            print("CHAPTER-TOGGLE \(label): " + times.map { String(format: "%.2f", $0) }.joined(separator: " "))
+            app.typeKey("l", modifierFlags: [.command, .option])
+            return times
+        }
+        let longTimes = toggleTimes(long)
+        let short = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Cuentos breves' OR value CONTAINS 'Cuentos breves'")).firstMatch
+        XCTAssertTrue(short.appears(timeout: 10))
+        let shortTimes = toggleTimes(short)
+        let median = { (t: [Double]) in t.sorted()[t.count / 2] }
+        XCTAssertLessThan(median(longTimes), median(shortTimes) + 0.25, "the chapter list is slower on a long chapter")
+        app.terminate()
+    }
+
     func testLaunchStress() throws {
         guard let dir = ProcessInfo.processInfo.environment["FLTS_UITEST_STRESS_DIR"] else { throw XCTSkip("stress only") }
         var crashes = 0
