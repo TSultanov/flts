@@ -149,9 +149,12 @@ final class FLTSiOSTour: XCTestCase {
         XCTAssertTrue(move.appears(timeout: 5), "no context menu on a book")
         shot(app, "t-4-menu")
         move.tap()
-        let folderName = app.textFields.firstMatch
-        XCTAssertTrue(folderName.appears(timeout: 5), "the move sheet did not open")
-        folderName.tap()
+        let newFolder = app.buttons["New Folder"].firstMatch
+        XCTAssertTrue(newFolder.appears(timeout: 5), "the move sheet did not open")
+        shot(app, "t-5-move-tree")
+        newFolder.tap()
+        let folderName = app.textFields["new-folder-name"].firstMatch
+        XCTAssertTrue(folderName.appears(timeout: 5), "no field for the new folder's name")
         folderName.typeText("Pruebas")
         shot(app, "t-5-move")
         app.buttons["Move"].firstMatch.tap()

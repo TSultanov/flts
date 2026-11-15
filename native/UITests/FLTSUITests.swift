@@ -408,8 +408,13 @@ final class FLTSScreenshotTour: XCTestCase {
         app.menuItems["Move to Folder…"].click()
         let sheet = app.sheets.firstMatch
         XCTAssertTrue(sheet.appears(timeout: 5))
-        sheet.textFields.firstMatch.click()
+        shot(window, "5-move")
+        sheet.buttons["New Folder"].firstMatch.click()
+        XCTAssertTrue(sheet.textFields.firstMatch.appears(timeout: 3), "no field for the new folder's name")
         sheet.typeText("Cuentos")
+        app.typeKey(.return, modifierFlags: [])  // adds the folder and selects it
+        XCTAssertTrue(until(3) { (sheet.staticTexts["move-destination"].value as? String ?? sheet.staticTexts["move-destination"].label).hasSuffix("/Cuentos") })
+        shot(window, "5-move-new-folder")
         app.typeKey(.return, modifierFlags: [])  // the default button
         pause(0.15)
         let folder = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'Cuentos' OR title == 'Cuentos' OR value == 'Cuentos'")).firstMatch

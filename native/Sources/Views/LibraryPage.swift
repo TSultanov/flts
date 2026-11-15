@@ -323,62 +323,228 @@ private struct SelectionBar: View {
     }
 }
 
+/// Picks a destination in the folder tree; new folders exist only here until
+/// a book is moved into them (a folder is just its books' path).
 struct MoveBookSheet: View {
     let books: [BookMeta]
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    @State private var target: [String] = []
-    @State private var newFolder = ""
+    @State private var target: [String]
+    @State private var created: [[String]] = []
+    @State private var naming = false
+    @State private var newName = ""
+    @FocusState private var focus: Field?
+
+    private enum Field { case tree, name }
+
+    init(books: [BookMeta]) {
+        self.books = books
+        let first = books.first?.path ?? []
+        _target = State(initialValue: books.allSatisfy { $0.path == first } ? first : [])
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(books.count == 1 ? "Move “\(books[0].title)”" : "Move \(books.count) books")
-                .font(.headline)
-            #if os(macOS)
-            folderPicker
-            #else
-            // Outside a form, an iOS picker shows only its value.
-            HStack {
-                Text("Folder")
-                Spacer()
-                folderPicker
+        #if os(macOS)
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Move to Folder").font(.headline)
+                Text(books.count == 1 ? books[0].title : "\(books.count) books").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             }
-            #endif
-            TextField("Or a new folder inside it", text: $newFolder)
-                #if os(iOS)
-                .textFieldStyle(.roundedBorder)
-                #endif
-            Text("Move to: " + destinationLabel)
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            tree
+                .frame(height: 260)
+                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(.separator) }
+            footer
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Move") {
-                    let name = newFolder.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let path = name.isEmpty ? target : target + [name]
-                    Task { await model.library.move(books.map(\.id), to: path) }
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
+                // Return in the name field adds the folder; it must not also move.
+                Button("Move", action: move)
+                    .keyboardShortcut(naming ? nil : .defaultAction)
+                    .disabled(alreadyThere)
             }
         }
         .padding(20)
-        .sheetSize(width: 420)
+        .frame(width: 440)
+        .onAppear { focus = .tree }
+        #else
+        NavigationStack {
+            VStack(spacing: 0) {
+                tree
+                Divider()
+                footer.padding(.horizontal, 16).padding(.vertical, 10)
+            }
+            .navigationTitle(subject)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("Move", action: move).disabled(alreadyThere) }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        #endif
     }
 
-    private var folderPicker: some View {
-        Picker("Folder", selection: $target) {
-            ForEach(model.library.tree.allPaths, id: \.self) { path in
-                Text(path.isEmpty ? "Library" : path.joined(separator: " › ")).tag(path)
+    private var subject: String {
+        books.count == 1 ? "Move “\(books[0].title)”" : "Move \(books.count) books"
+    }
+
+    private var footer: some View {
+        HStack(spacing: 12) {
+            Button {
+                naming = true
+            } label: {
+                Label("New Folder", systemImage: "folder.badge.plus")
             }
+            .disabled(naming)
+            Spacer(minLength: 8)
+            Text("Move to: /" + destination.joined(separator: "/"))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.head)
+                .accessibilityIdentifier("move-destination")
         }
     }
 
-    private var destinationLabel: String {
-        let name = newFolder.trimmingCharacters(in: .whitespacesAndNewlines)
-        let path = name.isEmpty ? target : target + [name]
-        return "/" + path.joined(separator: "/")
+    private var tree: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(paths, id: \.self) { path in
+                        folderRow(path).id(path)
+                        if naming && path == target { nameRow.id("naming") }
+                    }
+                }
+                .padding(6)
+            }
+            .onChange(of: naming) { if naming { proxy.scrollTo("naming", anchor: .center) } }
+            .onChange(of: target) { proxy.scrollTo(target) }
+            .onAppear { proxy.scrollTo(target, anchor: .center) }
+        }
+        #if os(macOS)
+        .focusable()
+        .focusEffectDisabled()
+        .focused($focus, equals: .tree)
+        .onKeyPress(.upArrow) { step(-1) }
+        .onKeyPress(.downArrow) { step(1) }
+        #endif
+    }
+
+    private func folderRow(_ path: [String]) -> some View {
+        let selected = path == target
+        return Button {
+            target = path
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: path.isEmpty ? "books.vertical" : "folder")
+                    .foregroundStyle(selected ? Color.white : Color.accentColor)
+                    .frame(width: 22)
+                Text(path.last ?? "Library").lineLimit(1)
+                Spacer(minLength: 8)
+                if books.allSatisfy({ $0.path == path }) {
+                    Text("Current").font(.caption).opacity(0.7)
+                }
+                if selected {
+                    Image(systemName: "checkmark").font(.caption.weight(.semibold))
+                }
+            }
+            .padding(.leading, indent(path.count))
+            .padding(.trailing, 10)
+            .frame(minHeight: Self.rowHeight)
+            .foregroundStyle(selected ? Color.white : Color.primary)
+            .background(selected ? Color.accentColor : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("move-folder:" + path.joined(separator: "/"))
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var nameRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "folder.badge.plus")
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
+            TextField("New folder name", text: $newName)
+                .textFieldStyle(.roundedBorder)
+                .focused($focus, equals: .name)
+                .onSubmit(commitName)
+                .accessibilityIdentifier("new-folder-name")
+                #if os(macOS)
+                .onExitCommand(perform: cancelName)
+                #endif
+            Button(action: cancelName) {
+                Image(systemName: "xmark.circle.fill")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("Cancel New Folder")
+        }
+        .padding(.leading, indent(target.count + 1))
+        .padding(.trailing, 10)
+        .frame(minHeight: Self.rowHeight)
+        // Focus set before the field is in the window is lost.
+        .onAppear { DispatchQueue.main.async { focus = .name } }
+    }
+
+    #if os(macOS)
+    private static let rowHeight: CGFloat = 28
+    #else
+    private static let rowHeight: CGFloat = 44
+    #endif
+
+    private func indent(_ depth: Int) -> CGFloat { CGFloat(depth) * 18 + 8 }
+
+    /// Every folder, the new ones included, in the library's order.
+    private var paths: [[String]] {
+        let all = Set(model.library.tree.allPaths).union(created)
+        func walk(_ parent: [String]) -> [[String]] {
+            let children = all
+                .filter { $0.count == parent.count + 1 && Array($0.dropLast()) == parent }
+                .sorted { $0[parent.count].localizedStandardCompare($1[parent.count]) == .orderedAscending }
+            return [parent] + children.flatMap(walk)
+        }
+        return walk([])
+    }
+
+    private var pendingName: String {
+        naming ? newName.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+    }
+
+    /// A name still being typed counts, so Move does not drop it.
+    private var destination: [String] {
+        pendingName.isEmpty ? target : target + [pendingName]
+    }
+
+    private var alreadyThere: Bool {
+        books.allSatisfy { $0.path == destination }
+    }
+
+    private func commitName() {
+        let path = destination
+        if !paths.contains(path) { created.append(path) }
+        target = path
+        cancelName()
+    }
+
+    private func cancelName() {
+        naming = false
+        newName = ""
+        focus = .tree
+    }
+
+    private func step(_ by: Int) -> KeyPress.Result {
+        let all = paths
+        guard let i = all.firstIndex(of: target), all.indices.contains(i + by) else { return .handled }
+        target = all[i + by]
+        return .handled
+    }
+
+    private func move() {
+        let path = destination
+        Task { await model.library.move(books.map(\.id), to: path) }
+        dismiss()
     }
 }
