@@ -958,3 +958,22 @@ extension NSView {
         #expect(!book.canTranslate(2))
     }
 }
+
+@MainActor
+@Suite struct DeletedBookNoticeTests {
+    @Test func deletingTheOpenBookLeavesANotice() async throws {
+        let core = FakeCore()
+        let id = UUID()
+        core.getLanguagesHandler = { [] }
+        core.getTranslationProvidersHandler = { [] }
+        core.listBooksHandler = {
+            [BookMeta(id: id, title: "Libro", chaptersCount: 1, paragraphsCount: 1, translationRatio: 0, path: [])]
+        }
+        let model = AppModel(core: core)
+        await model.library.reload()
+        model.selectedBookId = id
+        model.events.deliver(.bookDeleted(bookId: id))
+        #expect(model.selectedBookId == nil)
+        #expect(model.deletedBookNotice?.contains("Libro") == true)
+    }
+}

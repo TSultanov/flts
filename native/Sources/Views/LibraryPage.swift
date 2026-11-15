@@ -11,8 +11,24 @@ struct LibraryPage: View {
 
     var body: some View {
         @Bindable var model = model
-        Group {
-            if model.library.loaded && model.library.books.isEmpty && model.library.pendingFolders.isEmpty {
+        VStack(spacing: 0) {
+            // Above the list, so they show even when the library becomes empty.
+            if let error = model.library.error {
+                NoticeBar(text: error, symbol: "exclamationmark.triangle", tint: .red) { model.library.error = nil }
+            }
+            if let notice = model.deletedBookNotice {
+                NoticeBar(text: notice, symbol: "trash", tint: .secondary) { model.deletedBookNotice = nil }
+            }
+            content
+        }
+        .modifier(LibraryChrome(
+            moving: $moving, deleting: $deleting, creatingFolder: $creatingFolder, selection: $selection))
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        @Bindable var model = model
+        if model.library.loaded && model.library.books.isEmpty && model.library.pendingFolders.isEmpty {
                 ContentUnavailableView {
                     Label("Your Library Is Empty", systemImage: "books.vertical")
                 } description: {
@@ -23,25 +39,6 @@ struct LibraryPage: View {
                 }
             } else {
                 List(selection: $selection) {
-                    if let error = model.library.error {
-                        Section {
-                            HStack {
-                                Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
-                                Spacer()
-                                Button("Dismiss") { model.library.error = nil }.buttonStyle(.borderless)
-                            }
-                        }
-                    }
-                    if let notice = model.deletedBookNotice {
-                        Section {
-                            HStack {
-                                Label(notice, systemImage: "trash")
-                                Spacer()
-                                Button("Dismiss") { model.deletedBookNotice = nil }
-                                    .buttonStyle(.borderless)
-                            }
-                        }
-                    }
                     if let progress = model.library.importProgress {
                         Section {
                             ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1))) {
@@ -84,51 +81,83 @@ struct LibraryPage: View {
                 }
                 .frame(maxWidth: 900)
                 .frame(maxWidth: .infinity)
-            }
-        }
-        .navigationTitle("Library")
-        .toolbar {
-            AppToolbarItems()
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button {
-                    creatingFolder = true
-                } label: {
-                    Label("New Folder", systemImage: "folder.badge.plus")
-                }
-                .help("New Folder")
-                Button {
-                    model.showImport = true
-                } label: {
-                    Label("Import", systemImage: "plus")
-                }
-                .help("Import a book")
-            }
-        }
-        .sheet(isPresented: Binding(get: { !moving.isEmpty }, set: { if !$0 { moving = [] } })) {
-            MoveBookSheet(books: moving)
-        }
-        .sheet(isPresented: $creatingFolder) {
-            NewFolderSheet()
-        }
-        .confirmationDialog(
-            deleting.count == 1 ? "Delete “\(deleting[0].title)”?" : "Delete \(deleting.count) books?",
-            isPresented: Binding(get: { !deleting.isEmpty }, set: { if !$0 { deleting = [] } }),
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                let ids = deleting.map(\.id)
-                Task { await model.library.delete(ids) }
-                selection.subtract(ids)
-                deleting = []
-            }
-            Button("Cancel", role: .cancel) { deleting = [] }
-        } message: {
-            Text("The book and its translations are removed from every synced device.")
         }
     }
 
     private func open(_ id: UUID) {
         model.selectedBookId = id
+    }
+}
+
+/// The library page's title, toolbar, sheets and confirmations.
+private struct LibraryChrome: ViewModifier {
+    @Environment(AppModel.self) private var model
+    @Binding var moving: [BookMeta]
+    @Binding var deleting: [BookMeta]
+    @Binding var creatingFolder: Bool
+    @Binding var selection: Set<UUID>
+
+    func body(content: Content) -> some View {
+        content
+            .navigationTitle("Library")
+                .toolbar {
+                AppToolbarItems()
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        creatingFolder = true
+                    } label: {
+                        Label("New Folder", systemImage: "folder.badge.plus")
+                    }
+                        .help("New Folder")
+                    Button {
+                        model.showImport = true
+                    } label: {
+                        Label("Import", systemImage: "plus")
+                    }
+                        .help("Import a book")
+                }
+            }
+                .sheet(isPresented: Binding(get: { !moving.isEmpty }, set: { if !$0 { moving = [] } })) {
+                MoveBookSheet(books: moving)
+            }
+                .sheet(isPresented: $creatingFolder) {
+                NewFolderSheet()
+            }
+                .confirmationDialog(
+                deleting.count == 1 ? "Delete “\(deleting[0].title)”?" : "Delete \(deleting.count) books?",
+                isPresented: Binding(get: { !deleting.isEmpty }, set: { if !$0 { deleting = [] } }),
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    let ids = deleting.map(\.id)
+                    Task { await model.library.delete(ids) }
+                    selection.subtract(ids)
+                    deleting = []
+                }
+                Button("Cancel", role: .cancel) { deleting = [] }
+            } message: {
+                Text("The book and its translations are removed from every synced device.")
+            }
+    }
+}
+
+/// A dismissible line above the library list.
+private struct NoticeBar: View {
+    let text: String
+    let symbol: String
+    let tint: Color
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack {
+            Label(text, systemImage: symbol).foregroundStyle(tint)
+            Spacer()
+            Button("Dismiss", action: dismiss).buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
     }
 }
 

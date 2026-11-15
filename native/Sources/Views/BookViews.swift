@@ -13,7 +13,7 @@ struct ChaptersList: View {
                 Task {
                     await session.open(chapter: id)
                     // As in the web app, picking a chapter closes the list.
-                    if session.controls.chaptersShown { session.controls.toggleChapters?() }
+                    session.controls.hideChapters?()
                     // After the list has taken focus for the click, so keys page again.
                     try? await Task.sleep(for: .milliseconds(80))
                     session.controls.focus()
@@ -31,7 +31,7 @@ struct ChaptersList: View {
                             Task {
                                 try? await Task.sleep(for: .milliseconds(80))
                                 // Also when the open chapter was clicked (no selection change).
-                                if session.controls.chaptersShown { session.controls.toggleChapters?() }
+                                session.controls.hideChapters?()
                                 session.controls.focus()
                             }
                         })

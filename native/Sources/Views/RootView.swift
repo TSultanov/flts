@@ -103,48 +103,64 @@ struct BookPage: View {
     @State private var columns = NavigationSplitViewVisibility.detailOnly
     @State private var wordExpanded = false
 
+    @ViewBuilder
+    private var reader: some View {
+        if let session {
+            BookReaderScreen(
+                session: session, wordExpanded: $wordExpanded,
+                toggleChapters: {
+                    guard !singleChapter else { return }
+                    columns = columns == .detailOnly ? .all : .detailOnly
+                })
+                .onAppear {
+                    session.controls.hideChapters = { columns = .detailOnly }
+                }
+        } else {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarItems: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Button {
+                model.selectedBookId = nil
+            } label: {
+                Label("Library", systemImage: "chevron.backward")
+            }
+            .help("Back to the library (⌥⌘L)")
+        }
+        AppToolbarItems()
+    }
+
     private var singleChapter: Bool {
         guard let session, session.book.loaded else { return false }
         return session.book.chapters.count <= 1
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columns) {
-            Group {
-                if let session {
-                    ChaptersList(session: session)
-                } else {
-                    ProgressView()
-                }
-            }
-            .navigationSplitViewColumnWidth(min: 180, ideal: 240, max: 360)
-        } detail: {
-            Group {
-                if let session {
-                    BookReaderScreen(
-                        session: session, wordExpanded: $wordExpanded,
-                        toggleChapters: {
-                            // A one-chapter book has no list, as in the web app.
-                            guard session.book.chapters.count > 1 else { return }
-                            columns = columns == .detailOnly ? .all : .detailOnly
-                        })
-                } else {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
-            .toolbar {
-                ToolbarItem(placement: .navigation) {
-                    Button {
-                        model.selectedBookId = nil
-                    } label: {
-                        Label("Library", systemImage: "chevron.backward")
+        Group {
+            // A one-chapter book has no chapter list at all (as in the web app),
+            // so no split view and no sidebar toggle.
+            if singleChapter {
+                reader
+                    .toolbar { toolbarItems }
+            } else {
+                NavigationSplitView(columnVisibility: $columns) {
+                    Group {
+                        if let session {
+                            ChaptersList(session: session)
+                        } else {
+                            ProgressView()
+                        }
                     }
-                    .help("Back to the library (⌥⌘L)")
+                    .navigationSplitViewColumnWidth(min: 180, ideal: 240, max: 360)
+                } detail: {
+                    reader
+                        .toolbar { toolbarItems }
                 }
-                AppToolbarItems()
             }
         }
-        .toolbar(removing: singleChapter ? .sidebarToggle : nil)
         .onChange(of: columns) { _, c in session?.controls.chaptersShown = c != .detailOnly }
         .task {
             guard let core = model.core else { return }

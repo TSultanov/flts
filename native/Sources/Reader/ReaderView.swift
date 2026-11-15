@@ -11,6 +11,8 @@ final class ReaderControls {
     /// Single-key toggles as in the web reader (W, C), set by the book page.
     var toggleWordPanel: (() -> Void)?
     var toggleChapters: (() -> Void)?
+    /// Idempotent, so two paths closing the list cannot reopen it.
+    var hideChapters: (() -> Void)?
     var chaptersShown = false
 
     func next() { canvas?.nextSpread() }

@@ -102,10 +102,12 @@ final class FLTSScreenshotTour: XCTestCase {
         sleep(1)
         assertFlips(app, "after clicking in the word panel")
 
-        // A one-chapter book has no chapter list (as in the web app).
+        // A one-chapter book has no chapter list (as in the web app), nor a toggle for it.
         app.typeKey("c", modifierFlags: [])
         sleep(1)
         XCTAssertFalse(app.outlines.firstMatch.exists, "a one-chapter book shows a chapter list")
+        XCTAssertFalse(window.toolbars.buttons["Show Sidebar"].exists || window.toolbars.buttons["Hide Sidebar"].exists,
+            "a one-chapter book has a sidebar toggle")
         assertFlips(app, "after C on a one-chapter book")
 
         let from = page.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.3))
@@ -132,7 +134,8 @@ final class FLTSScreenshotTour: XCTestCase {
 
         // A book with chapters: the list is hidden until C, and closes after a pick.
         let epub = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Cuentos breves' OR value CONTAINS 'Cuentos breves'")).firstMatch
-        if epub.waitForExistence(timeout: 5) {
+        XCTAssertTrue(epub.waitForExistence(timeout: 5), "the multi-chapter fixture book is missing")
+        do {
             epub.doubleClick()
             sleep(2)
             XCTAssertFalse(app.outlines.firstMatch.exists, "chapter list should start hidden")
@@ -145,7 +148,8 @@ final class FLTSScreenshotTour: XCTestCase {
             XCTAssertFalse(app.outlines.firstMatch.exists, "the list did not close after picking a chapter")
             // Chapter 2 waits for chapter 1's summary, which this test library never gets.
             let translate = app.buttons["Translate Chapter"].firstMatch
-            if translate.exists { XCTAssertFalse(translate.isEnabled, "translating before the summaries exist") }
+            XCTAssertTrue(translate.exists, "no Translate Chapter button on an untranslated chapter")
+            XCTAssertFalse(translate.isEnabled, "translating before the summaries exist")
             app.typeKey("c", modifierFlags: [])
             XCTAssertTrue(app.outlines.firstMatch.waitForExistence(timeout: 3), "C ignored after picking a chapter")
             app.typeKey("c", modifierFlags: [])
