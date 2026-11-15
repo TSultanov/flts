@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// The web app's top bar on every page: sync status, Anki sync, Lyrics.
+/// The library's status items: sync status, Anki sync, Lyrics. The reader's
+/// toolbar is left to the book; Lyrics is also in the Window menu (⇧⌘L).
 struct AppToolbarItems: ToolbarContent {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
@@ -8,8 +9,10 @@ struct AppToolbarItems: ToolbarContent {
     @AppStorage("settingsTab", store: AppDefaults.store) private var settingsTab = SettingsTab.translation
 
     var body: some ToolbarContent {
-        ToolbarItemGroup(placement: .automatic) {
-            if model.config.config?.syncEnabled == true {
+        // Separate plain items: a group with conditional content is hosted as
+        // one custom view, which AppKit's toolbar layout has crashed on.
+        if model.config.config?.syncEnabled == true {
+            ToolbarItem(placement: .automatic) {
                 Button {
                     settingsTab = .sync
                     openSettings()
@@ -25,8 +28,10 @@ struct AppToolbarItems: ToolbarContent {
                 .help(syncLabel)
                 .accessibilityLabel(syncLabel)
             }
-            // As in the web app: hidden while Anki isn't running.
-            if model.config.config?.ankiSyncEnabled == true, model.config.isConfigured, model.anki.reachable {
+        }
+        // As in the web app: hidden while Anki isn't running.
+        if model.config.config?.ankiSyncEnabled == true, model.config.isConfigured, model.anki.reachable {
+            ToolbarItem(placement: .automatic) {
                 Button {
                     Task { await model.anki.syncNow() }
                 } label: {
@@ -37,6 +42,8 @@ struct AppToolbarItems: ToolbarContent {
                 .help(ankiHelp)
                 .accessibilityLabel("Sync Anki")
             }
+        }
+        ToolbarItem(placement: .automatic) {
             Button {
                 openWindow(id: "lyrics")
             } label: {

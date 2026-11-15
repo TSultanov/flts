@@ -28,12 +28,9 @@ final class FLTSScreenshotTour: XCTestCase {
         app.launchEnvironment = ["FLTS_CONFIG_DIR": dir, "FLTS_DISABLE_SYNC": "1", "FLTS_DISABLE_KEYRING": "1"]
         // Only the dark launch pins the setting: an argument outranks what the app saves.
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"] + (dark ? ["-appearance", "dark"] : [])
-        // Explicit, so the run does not depend on the last saved frame. Below
-        // the minimum, the window opens at its smallest allowed size.
-        app.launchArguments += [
-            "-NSWindow Frame main-AppWindow-1",
-            smallest ? "100 450 400 300 0 0 1728 1083 " : "100 150 1180 800 0 0 1728 1083 ",
-        ]
+        // Set by the app itself, so the run does not depend on the last saved
+        // frame. Below the minimum, the window gets its smallest allowed size.
+        app.launchEnvironment["FLTS_WINDOW_SIZE"] = smallest ? "400x300" : "1180x800"
         app.launch()
         return app
     }
@@ -127,9 +124,16 @@ final class FLTSScreenshotTour: XCTestCase {
         app.typeKey("c", modifierFlags: [])
         pause()
         XCTAssertFalse(app.outlines.firstMatch.exists, "a one-chapter book shows a chapter list")
-        XCTAssertFalse(window.toolbars.buttons["Show Sidebar"].exists || window.toolbars.buttons["Hide Sidebar"].exists,
-            "a one-chapter book has a sidebar toggle")
+        XCTAssertFalse(app.buttons["Chapters"].firstMatch.exists, "a one-chapter book has a chapters button")
         assertFlips(app, "after C on a one-chapter book")
+
+        // Text size from the keyboard, past the upper limit and back (this used to crash).
+        for _ in 0..<3 { app.typeKey("+", modifierFlags: .command) }
+        pause()
+        shot(window, "4-larger-text")
+        app.typeKey("0", modifierFlags: .command)
+        XCTAssertTrue(page.appears(timeout: 3), "the reader did not survive a text size change")
+        assertFlips(app, "after changing the text size")
 
         let from = page.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.3))
         from.click(forDuration: 0.2, thenDragTo: page.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.32)))
@@ -164,7 +168,9 @@ final class FLTSScreenshotTour: XCTestCase {
             XCTAssertTrue(app.outlines.firstMatch.appears(timeout: 3), "C did not show the chapters")
             pause()
             shot(window, "3-chapters")
-            app.outlines.firstMatch.cells.element(boundBy: 1).click()
+            // By position: over the reader, XCTest's own hit check does not see the row.
+            app.outlines.firstMatch.staticTexts["Uno"].firstMatch
+                .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
             pause()
             XCTAssertFalse(app.outlines.firstMatch.exists, "the list did not close after picking a chapter")
             // Chapter 2 waits for chapter 1's summary, which this test library never gets.
@@ -268,7 +274,7 @@ final class FLTSScreenshotTour: XCTestCase {
         dark.typeKey("w", modifierFlags: [])
         pause()
         shot(dark.windows.firstMatch, "10-dark-reader")
-        dark.buttons["Lyrics"].firstMatch.click()
+        dark.typeKey("l", modifierFlags: [.command, .shift])
         let darkLyrics = dark.windows["Lyrics"]
         if darkLyrics.appears(timeout: 5) {
             pause(0.4)

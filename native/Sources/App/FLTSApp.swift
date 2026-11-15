@@ -38,6 +38,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Unit tests run inside the app; they must not open a real library.
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
         model.start()
+        pinWindowSizeForTests()
+    }
+
+    /// UI tests set `FLTS_WINDOW_SIZE=WxH` (with a test config dir) for a known
+    /// window size. A frame passed as a launch argument cannot be used: the
+    /// saved frame then never changes, and AppKit dies re-laying out the toolbar.
+    private func pinWindowSizeForTests() {
+        let env = ProcessInfo.processInfo.environment
+        let parts = (env["FLTS_WINDOW_SIZE"] ?? "").split(separator: "x").compactMap { Double($0) }
+        guard parts.count == 2, !(env["FLTS_CONFIG_DIR"] ?? "").isEmpty else { return }
+        var observer: NSObjectProtocol?
+        observer = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeMainNotification, object: nil, queue: .main
+        ) { note in
+            guard let window = note.object as? NSWindow else { return }
+            MainActor.assumeIsolated {
+                let size = CGSize(
+                    width: max(parts[0], window.minSize.width), height: max(parts[1], window.minSize.height))
+                let top = window.screen?.visibleFrame.maxY ?? window.frame.maxY
+                window.setFrame(CGRect(x: 100, y: top - 60 - size.height, width: size.width, height: size.height), display: true)
+            }
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+        }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -130,7 +153,12 @@ final class ReaderPreferences {
 
     var fontSize: CGFloat {
         didSet {
-            fontSize = min(max(fontSize, 12), 36)
+            // Reassigning here re-enters this observer, so only when it changes the value.
+            let clamped = min(max(fontSize, 12), 36)
+            guard clamped == fontSize else {
+                fontSize = clamped
+                return
+            }
             AppDefaults.store.set(Double(fontSize), forKey: "readerFontSize")
         }
     }

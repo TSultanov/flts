@@ -23,6 +23,7 @@
 		9A3601CA909CF13446C4A346 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5582E16E0D191ABC1682CDB /* SettingsView.swift */; };
 		A5EFCFD3858C53563D1F6F49 /* SyncStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EBF97A3C27722231CD62638 /* SyncStore.swift */; };
 		A703852169478D2CED2BBEB2 /* StoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D73BD0D3E208A638D0039218 /* StoreTests.swift */; };
+		ABD4089D5C7BCAFD4A8CD632 /* ReaderPreferencesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70EC6C653D4904487574F42B /* ReaderPreferencesTests.swift */; };
 		AFDAC85319D40C1618791C32 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA78D2BEBD2D2F194292BB0E /* AppModel.swift */; };
 		B0E6C227199FBDAC6BF293EF /* FakeCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F0075E0D7E3FACE312CBEAB /* FakeCore.swift */; };
 		B3DF2DB2680389EDF28FF18F /* SyncSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCB17544F8057188DBE9828E /* SyncSettings.swift */; };
@@ -71,6 +72,7 @@
 		551E4B4C7EB4310A82E080B0 /* LyricsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyricsStore.swift; sourceTree = "<group>"; };
 		5EBF97A3C27722231CD62638 /* SyncStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncStore.swift; sourceTree = "<group>"; };
 		6F0075E0D7E3FACE312CBEAB /* FakeCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FakeCore.swift; sourceTree = "<group>"; };
+		70EC6C653D4904487574F42B /* ReaderPreferencesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderPreferencesTests.swift; sourceTree = "<group>"; };
 		743F9310B7B8ED2F9548533D /* ImportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportSheet.swift; sourceTree = "<group>"; };
 		7FABDCCEFCFBD32B6B09CF9C /* FLTSUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FLTSUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		800EFD0D81D9FAAEDFDEF28A /* AppToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppToolbar.swift; sourceTree = "<group>"; };
@@ -155,6 +157,7 @@
 			isa = PBXGroup;
 			children = (
 				6F0075E0D7E3FACE312CBEAB /* FakeCore.swift */,
+				70EC6C653D4904487574F42B /* ReaderPreferencesTests.swift */,
 				D73BD0D3E208A638D0039218 /* StoreTests.swift */,
 			);
 			path = Tests;
@@ -386,6 +389,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B0E6C227199FBDAC6BF293EF /* FakeCore.swift in Sources */,
+				ABD4089D5C7BCAFD4A8CD632 /* ReaderPreferencesTests.swift in Sources */,
 				A703852169478D2CED2BBEB2 /* StoreTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

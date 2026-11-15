@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The selected word at the bottom of the reader: a one-line bar, which
-/// expands upward over the page (never resizing it, so pages do not reflow).
+/// The selected word at the bottom of the reader: a one-line bar, or (as in
+/// the web app) its details in place of the bar. The details grow upward over
+/// the page, never resizing it, so pages do not reflow.
 struct WordPanel: View {
     let session: BookSession
     @Binding var expanded: Bool
@@ -16,25 +17,28 @@ struct WordPanel: View {
         GeometryReader { geo in
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
-                if expanded {
-                    VStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    if expanded, session.word.info != nil {
                         resizeHandle(maxHeight: geo.size.height * 0.75)
+                        WordHeader(session: session, expanded: $expanded)
+                            .frame(height: Self.barHeight)
                         Divider()
                         ScrollView {
                             WordDetails(session: session)
-                                .padding()
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 14)
                                 .onGeometryChange(for: Double.self) { $0.size.height } action: { contentHeight = $0 }
                         }
                         .frame(height: min(contentHeight, max(height, 120), geo.size.height * 0.75))
                         WordFooter(session: session)
+                    } else {
+                        WordBar(session: session, expanded: $expanded)
+                            .frame(height: Self.barHeight)
                     }
-                    .background(.regularMaterial)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                Divider()
-                WordBar(session: session, expanded: $expanded)
-                    .frame(height: Self.barHeight)
-                    .background(.bar)
+                .background(.bar)
+                .overlay(alignment: .top) { Divider() }
+                .shadow(color: .black.opacity(expanded ? 0.1 : 0), radius: 10, y: -3)
             }
         }
         .animation(.easeOut(duration: 0.18), value: expanded)
@@ -43,9 +47,9 @@ struct WordPanel: View {
     private func resizeHandle(maxHeight: Double) -> some View {
         Capsule()
             .fill(.tertiary)
-            .frame(width: 36, height: 5)
+            .frame(width: 36, height: 4)
             .frame(maxWidth: .infinity)
-            .frame(height: 14)
+            .frame(height: 10)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture()
@@ -60,6 +64,57 @@ struct WordPanel: View {
                 if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
             }
             .accessibilityLabel("Resize word details")
+    }
+}
+
+/// The word itself, heading its details.
+private struct WordHeader: View {
+    let session: BookSession
+    @Binding var expanded: Bool
+
+    var body: some View {
+        let word = session.word
+        HStack(spacing: 10) {
+            if let info = word.info {
+                Text(info.original)
+                    .font(.system(.title2, design: .serif).weight(.semibold))
+                    .textSelection(.enabled)
+                if !info.grammar.originalInitialForm.isEmpty,
+                    info.grammar.originalInitialForm != info.original.lowercased()
+                {
+                    Text("(\(info.grammar.originalInitialForm))")
+                        .foregroundStyle(.secondary)
+                }
+                if let t = word.definition?.transcription, !t.isEmpty {
+                    Text(t).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                if case .failed(let message) = word.cardState {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                        .help(message)
+                }
+                if info.canCreateCard {
+                    CardButton(state: word.cardState, compact: true) {
+                        Task { await word.createCard() }
+                    }
+                }
+            } else {
+                Spacer()
+            }
+            Button {
+                expanded = false
+            } label: {
+                Image(systemName: "chevron.down")
+                    .frame(width: 20, height: 20)
+            }
+            .buttonStyle(.borderless)
+            .help("Hide word details (W)")
+            .accessibilityLabel("Hide word details")
+        }
+        .padding(.horizontal, 16)
     }
 }
 
@@ -124,15 +179,15 @@ private struct WordBar: View {
                 Spacer()
             }
             Button {
-                expanded.toggle()
+                expanded = true
             } label: {
-                Image(systemName: expanded ? "chevron.down" : "chevron.up")
+                Image(systemName: "chevron.up")
                     .frame(width: 20, height: 20)
             }
             .buttonStyle(.borderless)
-            .disabled(word.info == nil && !expanded)
-            .help(expanded ? "Hide word details" : "Show word details")
-            .accessibilityLabel(expanded ? "Hide word details" : "Show word details")
+            .disabled(word.info == nil)
+            .help("Show word details (W)")
+            .accessibilityLabel("Show word details")
         }
         .padding(.horizontal, 16)
     }
@@ -152,6 +207,7 @@ private struct WordFooter: View {
                 Text("Translate paragraph again with")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    .fixedSize()
                 Picker("Model", selection: $retranslateModel) {
                     let models = model.config.models(for: model.config.config?.translationProvider ?? .google)
                     if !models.contains(where: { $0.id == retranslateModel }) {
@@ -160,7 +216,8 @@ private struct WordFooter: View {
                     ForEach(models) { Text($0.name).tag($0.id) }
                 }
                 .labelsHidden()
-                .frame(maxWidth: 260)
+                .controlSize(.small)
+                .frame(maxWidth: 220)
                 Spacer()
                 if let ref = word.selection {
                     let activity = model.activity.activity(ref.bookId, ref.paragraphId)
@@ -244,7 +301,8 @@ struct WordDetails: View {
         if let value, !value.isEmpty {
             GridRow {
                 Text(label).foregroundStyle(.secondary)
-                Text(value).textSelection(.enabled)
+                // The model's tags come as "common_noun".
+                Text(value.replacingOccurrences(of: "_", with: " ")).textSelection(.enabled)
             }
         }
     }

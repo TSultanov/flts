@@ -322,14 +322,14 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         if let range = textSelection, range.length > 0 {
             NSColor.selectedTextBackgroundColor.setFill()
             for frame in text.frames(of: range) {
-                glyphRect(frame).offsetBy(dx: origin.x, dy: dy).fill()
+                highlightRect(frame).offsetBy(dx: origin.x, dy: dy).fill()
             }
         }
 
         if let sel = selected, let range = text.wordRange(paragraphId: sel.paragraphId, wordIndex: sel.wordIndex) {
             NSColor.controlAccentColor.withAlphaComponent(0.22).setFill()
             for frame in text.frames(of: range) {
-                let r = glyphRect(frame).offsetBy(dx: origin.x, dy: dy).insetBy(dx: -2, dy: -1)
+                let r = highlightRect(frame).offsetBy(dx: origin.x, dy: dy).insetBy(dx: -2, dy: 0)
                 NSBezierPath(roundedRect: r, xRadius: 3, yRadius: 3).fill()
             }
         }
@@ -352,6 +352,14 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         let fontSize = text.typography.fontSize
         let glyphHeight = (fontSize * 1.3).rounded()
         return CGRect(x: frame.minX, y: frame.maxY - glyphHeight, width: frame.width, height: glyphHeight)
+    }
+
+    /// The glyph box without the headroom above tall letters, where a word's
+    /// translation is drawn: a highlight must not reach under it.
+    private func highlightRect(_ frame: CGRect) -> CGRect {
+        let glyph = glyphRect(frame)
+        let headroom = (text.typography.fontSize * 0.2).rounded()
+        return CGRect(x: glyph.minX, y: glyph.minY + headroom, width: glyph.width, height: glyph.height - headroom)
     }
 
     private func drawTranslations(in page: ReaderPage, origin: CGPoint, dy: CGFloat) {
@@ -538,7 +546,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
             return
         }
         let key = WordKey(paragraphId: hit.paragraphId, wordIndex: word)
-        if revealed.contains(key) { revealed.remove(key) } else { revealed.insert(key) }
+        revealed.insert(key)
         selected = (hit.paragraphId, word)
         delegate?.reader(self, selected: hit.paragraphId, wordIndex: word)
     }

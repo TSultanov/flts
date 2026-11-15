@@ -54,7 +54,6 @@ struct ChaptersList: View {
                 Text("No chapters").foregroundStyle(.secondary)
             }
         }
-        .navigationTitle(model.library.book(book.bookId)?.title ?? "")
     }
 
     private func summaryReady(_ chapter: Int) -> Bool? {
@@ -145,7 +144,7 @@ struct BookReaderScreen: View {
         .focusedSceneValue(
             \.bookActions,
             BookActions(
-                translateChapter: translateChapter, toggleWordPanel: { wordExpanded.toggle() },
+                translateChapter: translateChapter, toggleWordPanel: { session.controls.toggleWordPanel?() },
                 toggleChapters: toggleChapters))
         .onChange(of: model.config.targetLanguage?.id) { _, id in
             session.word.targetLanguage = id ?? ""
@@ -184,12 +183,6 @@ struct BookReaderScreen: View {
                     ? "Translate the \(chapter.untranslatedCount) untranslated paragraphs in this chapter"
                     : "Waiting for chapter summaries…")
             }
-            Button {
-                wordExpanded.toggle()
-            } label: {
-                Label("Word Details", systemImage: "rectangle.bottomhalf.inset.filled")
-            }
-            .help("Show or hide word details (W)")
         }
     }
 }
