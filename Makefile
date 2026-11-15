@@ -30,7 +30,7 @@ IOS_IPA := $(TAURI_DIR)/gen/apple/build/arm64/$(PRODUCT).ipa
 .PHONY: all build dev deps check-deps hooks format \
 	build-macos build-ios build-android \
 	install-macos install-ios install-android \
-	build-macos-native install-macos-native test-macos-native test-macos-native-ui test-macos-native-ui-quick test-macos-native-ui-translate test-ios-native-ui \
+	build-macos-native install-macos-native test-macos-native test-macos-native-ui test-macos-native-ui-quick test-macos-native-ui-translate test-ios-native-ui test-ios-native-ui-services \
 	install\ macos install\ ios install\ android \
 	help
 
@@ -83,6 +83,9 @@ test-macos-native-ui-translate: ## on screen: translate and Anki against the e2e
 
 test-ios-native-ui: ## run the iOS UI tour in a Simulator, headless (SIM=<simulator id> NAME=<label> to pick one)
 	"$(NATIVE)/scripts/ios-ui-tests.sh" $(SIM) $(NAME)
+
+test-ios-native-ui-services: ## in a Simulator: translate and Anki against the e2e sims, library actions, local sync
+	"$(NATIVE)/scripts/ios-ui-services.sh" $(SIM) $(NAME)
 
 install-macos-native: build-macos-native ## replace /Applications/FLTS.app with the native app
 	@if pgrep -xq "$(PRODUCT)"; then echo "quit $(PRODUCT) first: both apps share one library"; exit 1; fi
