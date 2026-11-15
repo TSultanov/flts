@@ -12,6 +12,7 @@
 		11F00D3DB3015E5D38E0D034 /* LyricsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 826E12A28BF0C377970BD0F2 /* LyricsWindow.swift */; };
 		12B638E2F3AAA63B22E6F07A /* WordStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF620E2BDF89F27D0BD0C3E2 /* WordStore.swift */; };
 		15CC5981CBF78F7637E2D053 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8632E31A587AF6A7BCAD6379 /* RootView.swift */; };
+		1D805F049F0604182CFEAF02 /* RealLibraryCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = 362BAF23934FFA4B50211FBC /* RealLibraryCheck.swift */; };
 		34348C68DFC32ABCA0A2F821 /* ReaderCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = 852DAE2201EA604647746074 /* ReaderCanvas.swift */; };
 		35FD173C6FB4B63BF0C791E0 /* EventHub.swift in Sources */ = {isa = PBXBuildFile; fileRef = A320CFF769560DB88A407B7F /* EventHub.swift */; };
 		404DFDE53E7B26B4B7770597 /* ChapterTextLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0DF7B15C096AE212948CEA3 /* ChapterTextLayout.swift */; };
@@ -65,6 +66,7 @@
 		1D492B798E1EF8870DF93785 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		2CE17BCA5E5842EA67FF182A /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
 		2DBF3A20A2A2021F0C00A8F7 /* BookStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookStore.swift; sourceTree = "<group>"; };
+		362BAF23934FFA4B50211FBC /* RealLibraryCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealLibraryCheck.swift; sourceTree = "<group>"; };
 		3EAB6E06F2BDDB11536750AF /* FLTS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FLTS.entitlements; sourceTree = "<group>"; };
 		45721FA7B8BB10D4A9229905 /* FLTSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FLTSApp.swift; sourceTree = "<group>"; };
 		4AB7B0CF2CE6191870CA9198 /* BookViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookViews.swift; sourceTree = "<group>"; };
@@ -158,6 +160,7 @@
 			children = (
 				6F0075E0D7E3FACE312CBEAB /* FakeCore.swift */,
 				70EC6C653D4904487574F42B /* ReaderPreferencesTests.swift */,
+				362BAF23934FFA4B50211FBC /* RealLibraryCheck.swift */,
 				D73BD0D3E208A638D0039218 /* StoreTests.swift */,
 			);
 			path = Tests;
@@ -390,6 +393,7 @@
 			files = (
 				B0E6C227199FBDAC6BF293EF /* FakeCore.swift in Sources */,
 				ABD4089D5C7BCAFD4A8CD632 /* ReaderPreferencesTests.swift in Sources */,
+				1D805F049F0604182CFEAF02 /* RealLibraryCheck.swift in Sources */,
 				A703852169478D2CED2BBEB2 /* StoreTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

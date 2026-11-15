@@ -133,7 +133,15 @@ on) it lands on the right page of that paragraph.
   `FLTS_UITEST_STRESS_DIR` enables a 60-launch stress test, and with
   `FLTS_UITEST_LONG_EPUB` (a book from `scripts/fixtures/gen-long-epub.py`) a
   check that the chapter list is as quick on a 200-page chapter as on a short
-  one and never re-pages it. The window
+  one and never re-pages it.
+- A copy of a real library can be checked without touching the original:
+  copy `config.json` and `library/` somewhere, turn `syncEnabled` and
+  `ankiSyncEnabled` off in the copy, and set `FLTS_GEMINI_BASE_URL` to a dead
+  address so nothing is sent or billed. The `RealLibraryCheck` unit test
+  (`FLTS_TEST_REAL_DUMP=<out.json>` with `FLTS_CONFIG_DIR=<copy>`) dumps what
+  the app's bindings report, for comparison with the Tauri core's view of the
+  same data, and `testRealLibraryCopy` (`FLTS_UITEST_REAL_DIR=<copy>`) opens
+  the copy on screen. The window
   size comes from `FLTS_WINDOW_SIZE`, which the app applies itself: a frame
   pinned by a launch argument made it die at launch in AppKit's toolbar layout.
 - Reading position holds across a resize round trip

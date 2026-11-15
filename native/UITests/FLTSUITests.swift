@@ -23,9 +23,12 @@ extension XCUIElement {
 /// sandboxed and cannot write files).
 @MainActor
 final class FLTSScreenshotTour: XCTestCase {
-    private func launch(dir: String, dark: Bool = false, smallest: Bool = false, animations: Bool = false) -> XCUIApplication {
+    private func launch(
+        dir: String, dark: Bool = false, smallest: Bool = false, animations: Bool = false, env: [String: String] = [:]
+    ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment = ["FLTS_CONFIG_DIR": dir, "FLTS_DISABLE_SYNC": "1", "FLTS_DISABLE_KEYRING": "1"]
+        app.launchEnvironment.merge(env) { _, new in new }
         // Only the dark launch pins the setting: an argument outranks what the app saves.
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"] + (dark ? ["-appearance", "dark"] : [])
         // Set by the app itself, so the run does not depend on the last saved
@@ -126,6 +129,46 @@ final class FLTSScreenshotTour: XCTestCase {
         let shortTimes = toggleTimes(short)
         let median = { (t: [Double]) in t.sorted()[t.count / 2] }
         XCTAssertLessThan(median(longTimes), median(shortTimes) + 0.25, "the chapter list is slower on a long chapter")
+        app.terminate()
+    }
+
+    /// A copy of a real library (`FLTS_UITEST_REAL_DIR`), with the translation
+    /// service pointed nowhere: the library lists, a book opens and pages.
+    func testRealLibraryCopy() throws {
+        guard let dir = ProcessInfo.processInfo.environment["FLTS_UITEST_REAL_DIR"], !dir.isEmpty else {
+            throw XCTSkip("real library copy only")
+        }
+        let app = launch(dir: dir, env: ["FLTS_GEMINI_BASE_URL": "http://127.0.0.1:9/"])
+        let window = app.windows.firstMatch
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "value CONTAINS ' translated' OR value CONTAINS 'chapter'")).firstMatch
+            .appears(timeout: 30), "the library did not list any book")
+        pause(0.5)
+        for triangle in app.disclosureTriangles.allElementsBoundByIndex where triangle.value as? Int == 0 {
+            triangle.click()
+        }
+        pause(0.3)
+        shot(window, "real-0-library")
+        // The first book, from the keyboard.
+        app.typeKey(.downArrow, modifierFlags: [])
+        app.typeKey(.downArrow, modifierFlags: [])
+        app.typeKey(.return, modifierFlags: [])
+        let page = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Page'")).firstMatch
+        XCTAssertTrue(page.appears(timeout: 30), "the book did not open")
+        XCTAssertTrue(until(60) { page.label.contains(" of ") }, "the chapter never finished laying out")
+        pause(0.5)
+        shot(window, "real-1-reader")
+        assertFlips(app, "in a real book")
+        page.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.3)).click()
+        pause(1)
+        app.typeKey("w", modifierFlags: [])
+        pause(0.5)
+        shot(window, "real-2-word")
+        if app.buttons["Chapters"].firstMatch.exists {
+            app.typeKey("c", modifierFlags: [])
+            XCTAssertTrue(app.outlines.firstMatch.appears(timeout: 3))
+            pause(0.3)
+            shot(window, "real-3-chapters")
+        }
         app.terminate()
     }
 

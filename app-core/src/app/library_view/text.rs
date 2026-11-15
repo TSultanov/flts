@@ -77,6 +77,48 @@ impl Builder {
         }
         (start, len)
     }
+
+    /// Text between words. A literal newline is only white space in HTML: it
+    /// reads as a space, and as nothing right after a break or other space.
+    fn push_text(&mut self, piece: &str, marks: u8) {
+        if !piece.contains(['\n', '\r']) {
+            self.push(piece, marks);
+            return;
+        }
+        let mut buf = [0u8; 4];
+        for ch in piece.chars() {
+            if ch == '\n' || ch == '\r' {
+                let after_space = self
+                    .text
+                    .chars()
+                    .next_back()
+                    .is_none_or(|c| c == LINE_SEPARATOR || c.is_whitespace());
+                if !after_space {
+                    self.push(" ", marks);
+                }
+            } else {
+                self.push(ch.encode_utf8(&mut buf), marks);
+            }
+        }
+    }
+
+    /// Drops line breaks that end the paragraph. HTML shows no line for a
+    /// closing `<br>`, while a line separator would add an empty one.
+    fn trim_trailing_breaks(&mut self) {
+        let kept = self
+            .text
+            .trim_end_matches(|c: char| c == LINE_SEPARATOR || c.is_whitespace());
+        if !self.text[kept.len()..].contains(LINE_SEPARATOR) {
+            return;
+        }
+        self.text.truncate(kept.len());
+        self.utf16 = self.text.encode_utf16().count();
+        let end = self.utf16;
+        self.runs.retain_mut(|run| {
+            run.len = run.len.min(end.saturating_sub(run.start));
+            run.len > 0
+        });
+    }
 }
 
 pub fn paragraph_text(id: usize, original: &str, words: Option<&ParagraphWords>) -> ParagraphText {
@@ -93,7 +135,7 @@ pub fn paragraph_text(id: usize, original: &str, words: Option<&ParagraphWords>)
             for segment in paragraph_to_segments(original, words) {
                 match segment {
                     ParagraphSegment::Gap { text, marks } => {
-                        b.push(&text, mark_bits(&marks));
+                        b.push_text(&text, mark_bits(&marks));
                     }
                     ParagraphSegment::Break { marks } => {
                         b.push(LINE_SEPARATOR.encode_utf8(&mut buf), mark_bits(&marks));
@@ -122,12 +164,16 @@ pub fn paragraph_text(id: usize, original: &str, words: Option<&ParagraphWords>)
         None => {
             let chars: Vec<char> = original.chars().collect();
             for c in flatten_original(&chars) {
-                let ch = if c.is_break { LINE_SEPARATOR } else { c.ch };
-                b.push(ch.encode_utf8(&mut buf), mark_bits(&c.marks));
+                if c.is_break {
+                    b.push(LINE_SEPARATOR.encode_utf8(&mut buf), mark_bits(&c.marks));
+                } else {
+                    b.push_text(c.ch.encode_utf8(&mut buf), mark_bits(&c.marks));
+                }
             }
         }
     }
 
+    b.trim_trailing_breaks();
     ParagraphText {
         id,
         text: b.text,
@@ -140,6 +186,32 @@ pub fn paragraph_text(id: usize, original: &str, words: Option<&ParagraphWords>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_literal_newline_is_white_space() {
+        // Verse as importers write it: a break, then a newline in the source.
+        let p = paragraph_text(1, "one, <br>\ntwo<br>\r\nthree", None);
+        assert_eq!(p.text, "one, \u{2028}two\u{2028}three");
+        assert_eq!(
+            paragraph_text(1, "wrapped\nline", None).text,
+            "wrapped line"
+        );
+        assert_eq!(
+            paragraph_text(1, "wrapped \nline", None).text,
+            "wrapped line"
+        );
+    }
+
+    #[test]
+    fn a_closing_break_adds_no_empty_line() {
+        let p = paragraph_text(1, "verse line<br>", None);
+        assert_eq!(p.text, "verse line");
+        let p = paragraph_text(1, "one<br>two <b><br></b>", None);
+        assert_eq!(p.text, "one\u{2028}two");
+        assert!(p.runs.is_empty());
+        // Without a break, trailing space is left alone.
+        assert_eq!(paragraph_text(1, "plain ", None).text, "plain ");
+    }
 
     #[test]
     fn untranslated_original_is_decoded_with_marks_and_breaks() {
