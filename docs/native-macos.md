@@ -26,11 +26,13 @@ and the book's language, so Swift never parses HTML.
 
 As in the web app: the window opens on a library page (folders and books;
 double-click or Return opens, the context menu and Delete act on the whole
-selection). An open book is a split view whose chapter sidebar is hidden by
-default (C, or ⌃⌘C), with the word bar along the bottom: word, dictionary form,
-transcription, translations, and Anki; W (or ⌃⌘W) expands its details upward
-over the page without reflowing it. Back to the library is the toolbar's back
-button (⌥⌘L). Sync status, Anki sync and Lyrics sit in the toolbar on every page.
+selection). An open book is the reader alone; its chapter list slides over the
+page from the left (the Chapters button, C, or ⌃⌘C) and closes on a pick, so the
+text never reflows. The word bar runs along the bottom: word, dictionary form,
+transcription, translations, and Anki; W (or ⌃⌘W) replaces it with the word's
+details, which grow upward over the page. Back to the library is the toolbar's
+Library button (⌥⌘L). Sync status, Anki sync and Lyrics sit in the library's
+toolbar only; Lyrics is also in the menu (⇧⌘L).
 
 ## Build
 
@@ -122,7 +124,9 @@ on) it lands on the right page of that paragraph.
   smallest window from the keyboard, and on an empty config dir finishes
   onboarding, creates a folder and imports a pasted text. Its screenshots are
   attachments in the result bundle. It needs an unlocked session, and waits by
-  polling, since XCTest's own waits re-check only once a second.
+  polling, since XCTest's own waits re-check only once a second. The window
+  size comes from `FLTS_WINDOW_SIZE`, which the app applies itself: a frame
+  pinned by a launch argument made it die at launch in AppKit's toolbar layout.
 - Reading position holds across a resize round trip and ten sidebar toggles
   (a sticky anchor; full layouts wait for relayouts to settle).
 - Tauri on all three platforms still builds on the refactored core: macOS
