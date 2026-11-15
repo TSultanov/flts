@@ -173,8 +173,12 @@ after the core API changes.
 - QR scanning (macOS shows the pairing code; scanning comes with iPad).
 - An iPad target: the reader canvas and `Platform` are AppKit. `Sources/Core`
   and `Sources/Stores` type-check against the iOS 18 SDK under Swift 6.
-- Dark mode is checked by an offscreen render (the UI tests cannot switch the
-  system appearance).
+- Dark mode and the smallest window (720×480 content) are checked on screen by
+  the UI tour: dark through the app's own Appearance setting (Reading), the
+  smallest size through a preset window frame. `StateGallery` renders states
+  the tour cannot reach (OpenRouter family picker, lyrics with glosses, the
+  deleted-book notice, the shared-identity choice, translate waiting for
+  summaries) in light and dark to `FLTS_SNAPSHOT_DIR`.
 - Universal (x86_64) build; sandbox and App Store.
 
 ## Cutover notes

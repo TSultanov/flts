@@ -977,3 +977,128 @@ extension NSView {
         #expect(model.deletedBookNotice?.contains("Libro") == true)
     }
 }
+
+/// Renders states the UI tests cannot reach (fake data), light and dark, to
+/// `FLTS_SNAPSHOT_DIR`; skipped otherwise.
+@MainActor
+@Suite struct StateGallery {
+    private func config(_ provider: TranslationProvider, model: String) -> AppConfig {
+        AppConfig(
+            targetLanguageId: "eng", translationProvider: provider, geminiApiKey: nil, openaiApiKey: nil,
+            deepseekApiKey: nil, zaiApiKey: nil, openrouterApiKey: "k", model: model, libraryPath: nil,
+            spotifyClientId: nil, spotifyPreloadCount: 1, spotifyShowNextTrack: true, ankiEndpoint: nil,
+            ankiApiKey: nil, ankiSyncEnabled: false, syncEnabled: true, syncDeviceName: "Mac", translationConcurrency: 4)
+    }
+
+    private func fake() -> FakeCore {
+        let core = FakeCore()
+        core.getLanguagesHandler = { [LanguageInfo(id: "eng", name: "English", localName: "English")] }
+        core.getTranslationProvidersHandler = {
+            [ProviderMeta(id: .openrouter, name: "OpenRouter", defaultModel: "anthropic/claude", apiKeyField: "openrouterApiKey", modelSelection: "family")]
+        }
+        core.getLibraryRootHandler = { "/tmp/library" }
+        core.getConfigHandler = { self.config(.openrouter, model: "google/gemini-2.5-flash") }
+        core.getModelsHandler = {
+            [
+                ModelInfo(id: "anthropic/claude-sonnet", name: "Claude Sonnet", provider: .openrouter),
+                ModelInfo(id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash", provider: .openrouter),
+                ModelInfo(id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro", provider: .openrouter),
+                ModelInfo(id: "meta-llama/llama-4", name: "Llama 4", provider: .openrouter),
+            ]
+        }
+        core.listBooksHandler = {
+            [BookMeta(id: UUID(), title: "Lluvia en la ciudad", chaptersCount: 3, paragraphsCount: 40, translationRatio: 0.4, path: [])]
+        }
+        core.getSyncStatusHandler = {
+            SyncStatus(
+                state: .online, deviceId: "ABC", deviceCount: 1, connectedCount: 1, completion: nil, lastError: nil,
+                storeIssues: StoreIssues(newerVersion: 0, unreadable: 0, strangers: 0, stalled: false, sharedIdentity: true))
+        }
+        core.syncThisDeviceHandler = { ThisDevice(deviceId: "AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD", name: "Mac") }
+        core.syncListDevicesHandler = { [DeviceEntry(deviceId: "EEEEEEE-FFFFFFF", name: "iPad", connected: true)] }
+        core.syncListPendingHandler = { [] }
+        core.syncWebUiUrlHandler = { nil }
+        core.getAnkiSyncStatusHandler = { .idle }
+        core.listTranslationActivityHandler = { [] }
+        core.startSpotifyWatcherHandler = {}
+        core.getNowPlayingHandler = {
+            NowPlaying(state: .playing, trackId: "t", name: "Canción", artist: "Artista", album: "Álbum", positionMs: 12_000, durationMs: 180_000)
+        }
+        core.getTrackLyricsStateHandler = { _, _, _ in
+            TrackLyricsState(
+                lyrics: Lyrics(trackId: "t", lines: [
+                    LyricsLine(timeMs: 0, text: "La luna sale"), LyricsLine(timeMs: 10_000, text: "y el mar se calla"),
+                    LyricsLine(timeMs: 20_000, text: ""), LyricsLine(timeMs: 25_000, text: "Nadie sabe cuándo"),
+                ], synced: true),
+                translation: LyricsTranslation(trackId: "t", targetLang: "eng", model: "m", lines: [
+                    LyricsLineTranslation(translation: "The moon rises", glosses: [Gloss(fragment: "sale", gloss: "comes out", note: "")]),
+                    LyricsLineTranslation(translation: "and the sea goes quiet", glosses: [Gloss(fragment: "se calla", gloss: "falls silent", note: "reflexive")]),
+                    LyricsLineTranslation(translation: "", glosses: []),
+                    LyricsLineTranslation(translation: "Nobody knows when", glosses: []),
+                ]))
+        }
+        core.spotifyWebStatusHandler = { SpotifyWebStatus(connected: false, premiumRequired: false, lastError: nil) }
+        core.spotifyCdpStatusHandler = { SpotifyCdpStatus(available: true, port: 9222, hint: nil) }
+        core.spotifyLoginAgentStatusHandler = { SpotifyLoginAgentStatus(installed: false, path: "/p") }
+        core.spotifyWebQueueHandler = { nil }
+        return core
+    }
+
+    private func render(_ view: some View, _ name: String, size: NSSize, dir: String, model: AppModel) async throws {
+        for (suffix, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            let host = NSHostingView(rootView: view.environment(model).background(Color(nsColor: .windowBackgroundColor)))
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
+            window.appearance = NSAppearance(named: appearance)
+            window.contentView = host
+            try await Task.sleep(for: .milliseconds(600))
+            let rep = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: rep)
+            try rep.representation(using: .png, properties: [:])?.write(
+                to: URL(fileURLWithPath: dir).appendingPathComponent("gallery-\(name)-\(suffix).png"))
+        }
+    }
+
+    @Test func renderStates() async throws {
+        guard let dir = ProcessInfo.processInfo.environment["FLTS_SNAPSHOT_DIR"] else { return }
+        let model = AppModel(core: fake())
+        try await Task.sleep(for: .milliseconds(300))
+
+        try await render(Form { TranslationSettings() }.formStyle(.grouped), "openrouter-family", size: NSSize(width: 580, height: 460), dir: dir, model: model)
+        await model.sync.refresh()
+        try await render(SyncSettings(), "sync-shared-identity", size: NSSize(width: 580, height: 640), dir: dir, model: model)
+
+        model.lyrics.targetLanguage = "eng"
+        await model.lyrics.start()
+        try await Task.sleep(for: .milliseconds(200))
+        try await render(LyricsWindow(), "lyrics-glosses", size: NSSize(width: 520, height: 560), dir: dir, model: model)
+
+        model.deletedBookNotice = "“Cuentos” was deleted, possibly on another device."
+        try await render(LibraryPage(), "library-deleted-notice", size: NSSize(width: 820, height: 360), dir: dir, model: model)
+
+        // The reader with translation waiting for summaries: dim gutter icons.
+        final class Waiting: ReaderCanvasDelegate {
+            func reader(_ canvas: ReaderCanvas, selected paragraphId: Int, wordIndex: Int) {}
+            func reader(_ canvas: ReaderCanvas, translate paragraphId: Int, useCache: Bool) {}
+            func reader(_ canvas: ReaderCanvas, movedTo page: Int, of count: Int) {}
+            func readerTranslationProgress(_ canvas: ReaderCanvas, paragraphId: Int) -> Double? { paragraphId == 2 ? 0.4 : nil }
+            func readerToggle(_ canvas: ReaderCanvas, key: String) -> Bool { false }
+            func readerCanTranslate(_ canvas: ReaderCanvas) -> Bool { false }
+            func readerDeselected(_ canvas: ReaderCanvas) {}
+        }
+        let delegate = Waiting()
+        for (suffix, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            let canvas = ReaderCanvas(frame: NSRect(x: 0, y: 0, width: 900, height: 420))
+            canvas.appearance = NSAppearance(named: appearance)
+            canvas.delegate = delegate
+            let ps = Dictionary(uniqueKeysWithValues: (0..<4).map { id in
+                (id, ParagraphText(id: id, text: "La lluvia cae despacio sobre la ciudad antigua mientras nadie sabe cuándo volverá el sol.", runs: [], words: [], translated: false))
+            })
+            canvas.setContent(order: [0, 1, 2, 3], paragraphs: ps, typography: ReaderTypography(), anchor: nil)
+            canvas.layout()
+            let rep = try #require(canvas.bitmapImageRepForCachingDisplay(in: canvas.bounds))
+            canvas.cacheDisplay(in: canvas.bounds, to: rep)
+            try rep.representation(using: .png, properties: [:])?.write(
+                to: URL(fileURLWithPath: dir).appendingPathComponent("gallery-reader-waiting-\(suffix).png"))
+        }
+    }
+}

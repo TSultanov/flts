@@ -46,10 +46,14 @@ final class FLTSUITests: XCTestCase {
 /// result bundle (the runner is sandboxed and cannot write files).
 @MainActor
 final class FLTSScreenshotTour: XCTestCase {
-    private func launch(dir: String, dark: Bool = false) -> XCUIApplication {
+    private func launch(dir: String, dark: Bool = false, smallest: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment = ["FLTS_CONFIG_DIR": dir, "FLTS_DISABLE_SYNC": "1", "FLTS_DISABLE_KEYRING": "1"]
-        app.launchArguments = ["-AppleInterfaceStyle", dark ? "Dark" : "Light", "-ApplePersistenceIgnoreState", "YES"]
+        app.launchArguments = ["-appearance", dark ? "dark" : "system", "-ApplePersistenceIgnoreState", "YES"]
+        if smallest {
+            // Below the minimum: the window opens at its smallest allowed size.
+            app.launchArguments += ["-NSWindow Frame main-AppWindow-1", "100 100 400 300 0 0 1728 1083 "]
+        }
         app.launch()
         return app
     }
@@ -216,6 +220,56 @@ final class FLTSScreenshotTour: XCTestCase {
         XCTAssertTrue(again.descendants(matching: .any).matching(NSPredicate(format: "label == 'Cuentos'")).firstMatch
             .waitForExistence(timeout: 15), "relaunch did not open on the library")
         again.terminate()
+
+        // On screen in dark mode (the app's own appearance setting).
+        let dark = launch(dir: dir, dark: true)
+        if dark.disclosureTriangles.firstMatch.waitForExistence(timeout: 15),
+            dark.disclosureTriangles.firstMatch.value as? Int == 0
+        {
+            dark.disclosureTriangles.firstMatch.click()
+        }
+        let darkBook = dark.staticTexts["Lluvia en la ciudad"].firstMatch
+        XCTAssertTrue(darkBook.waitForExistence(timeout: 10))
+        darkBook.doubleClick()
+        let darkPage = dark.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Page'")).firstMatch
+        XCTAssertTrue(darkPage.waitForExistence(timeout: 10))
+        sleep(2)
+        darkPage.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.12)).click()
+        sleep(1)
+        dark.typeKey("w", modifierFlags: [])
+        sleep(1)
+        shot(dark.windows.firstMatch, "10-dark-reader")
+        dark.buttons["Lyrics"].firstMatch.click()
+        let darkLyrics = dark.windows["Lyrics"]
+        if darkLyrics.waitForExistence(timeout: 5) {
+            sleep(2)
+            shot(darkLyrics, "10-dark-lyrics")
+            darkLyrics.buttons[XCUIIdentifierCloseWindow].click()
+        }
+        dark.terminate()
+
+        // The smallest window, driven from the keyboard alone: arrows and
+        // Return open a book without a click.
+        let small = launch(dir: dir, smallest: true)
+        let smallWindow = small.windows.firstMatch
+        XCTAssertTrue(smallWindow.waitForExistence(timeout: 15))
+        sleep(2)
+        print("SMALLEST-WINDOW \(smallWindow.frame.size)")
+        shot(smallWindow, "12-min-library")
+        small.typeKey(.downArrow, modifierFlags: [])
+        small.typeKey(.downArrow, modifierFlags: [])
+        sleep(1)
+        shot(smallWindow, "12-min-after-arrows")
+        small.typeKey(.return, modifierFlags: [])
+        let smallPage = small.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Page'")).firstMatch
+        XCTAssertTrue(smallPage.waitForExistence(timeout: 10), "arrows and Return did not open a book")
+        sleep(2)
+        smallPage.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.15)).click()
+        sleep(1)
+        small.typeKey("w", modifierFlags: [])
+        sleep(1)
+        shot(smallWindow, "12-min-reader")
+        small.terminate()
 
         // First launch: onboarding on an empty config dir.
         if let empty = ProcessInfo.processInfo.environment["FLTS_UITEST_EMPTY_DIR"] {

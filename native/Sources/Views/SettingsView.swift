@@ -248,8 +248,16 @@ private struct ModelPicker: View {
 
 struct ReadingSettings: View {
     @Bindable private var prefs = ReaderPreferences.shared
+    @AppStorage(Appearance.key, store: AppDefaults.store) private var appearance = Appearance.system
 
     var body: some View {
+        Section("Appearance") {
+            Picker("Appearance", selection: $appearance) {
+                ForEach(Appearance.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: appearance) { _, _ in Appearance.apply() }
+        }
         Section("Text") {
             Slider(value: $prefs.fontSize, in: 12...36, step: 1) {
                 Text("Size")

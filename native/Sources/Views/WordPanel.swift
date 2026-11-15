@@ -96,6 +96,14 @@ private struct WordBar: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 8)
+                if case .failed(let message) = word.cardState {
+                    // Inline, as in the web app, not only in a tooltip.
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                        .help(message)
+                }
                 if info.canCreateCard {
                     CardButton(state: word.cardState, compact: true) {
                         Task { await word.createCard() }

@@ -5,6 +5,8 @@ struct SyncSettings: View {
     @State private var addId = ""
     @State private var addName = ""
     @State private var confirmReset = false
+    @State private var resetting = false
+    @State private var deviceName = ""
     @State private var webUI: URL?
 
     var body: some View {
@@ -23,17 +25,21 @@ struct SyncSettings: View {
                         get: { config.config?.syncEnabled ?? false },
                         set: { on in Task { await sync.setEnabled(on) } }))
                 if config.config?.syncEnabled == true {
-                    CommitField(title: "This device's name", value: config.config?.syncDeviceName ?? sync.thisDevice?.name ?? "")
-                    { name in
-                        Task { await sync.setDeviceName(name) }
+                    HStack {
+                        TextField("This device's name", text: $deviceName)
+                            .onSubmit { rename() }
+                        Button("Rename") { rename() }
+                            .disabled(trimmedName.isEmpty || trimmedName == currentName)
                     }
+                    .onAppear { deviceName = currentName }
+                    .onChange(of: currentName) { _, name in deviceName = name }
                     SyncStatusRow(status: sync.status)
                 }
             }
 
             if config.config?.syncEnabled == true {
                 if let issues = sync.status.storeIssues, issues.any {
-                    StoreIssuesSection(issues: issues, confirmReset: $confirmReset)
+                    StoreIssuesSection(issues: issues, confirmReset: $confirmReset, resetting: resetting)
                 }
 
                 if let device = sync.thisDevice {
@@ -138,12 +144,34 @@ struct SyncSettings: View {
             }
         }
         .disabled(sync.busy)
-        .confirmationDialog("Reset this device's sync identity?", isPresented: $confirmReset) {
-            Button("Reset Identity", role: .destructive) { Task { await sync.resetIdentity() } }
-            Button("This Is the Original", role: .none) { Task { await sync.keepIdentity() } }
+        .confirmationDialog("New sync identity", isPresented: $confirmReset) {
+            Button("Give This Device a New Identity", role: .destructive) {
+                resetting = true
+                Task {
+                    await sync.resetIdentity()
+                    resetting = false
+                }
+            }
+            Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Another device uses the same identity, usually because it was restored from a backup of this one. Reset the copy; every pairing on it has to be redone.")
+            Text("This device will get a new sync identity and sync will restart. It then has to be paired with your other devices again, where it shows up as a new device.")
         }
+    }
+}
+
+extension SyncSettings {
+    fileprivate var currentName: String {
+        model.config.config?.syncDeviceName ?? model.sync.thisDevice?.name ?? ""
+    }
+
+    fileprivate var trimmedName: String {
+        deviceName.trimmingCharacters(in: .whitespaces)
+    }
+
+    fileprivate func rename() {
+        let name = trimmedName
+        guard !name.isEmpty, name != currentName else { return }
+        Task { await model.sync.setDeviceName(name) }
     }
 }
 
@@ -178,6 +206,11 @@ struct SyncStatusRow: View {
 private struct StoreIssuesSection: View {
     let issues: StoreIssues
     @Binding var confirmReset: Bool
+    let resetting: Bool
+    /// Hidden once a choice was made here, until the issue clears and recurs.
+    @State private var identityDismissed = false
+    @Environment(AppModel.self) private var model
+    private var sync: SyncStore { model.sync }
 
     var body: some View {
         Section("Needs attention") {
@@ -190,11 +223,24 @@ private struct StoreIssuesSection: View {
             if issues.strangers > 0 {
                 Label("The sync folder contains conflict copies that are being ignored.", systemImage: "doc.on.doc")
             }
-            if issues.sharedIdentity {
-                HStack {
-                    Label("Another device shares this device's identity.", systemImage: "person.2.slash")
-                    Spacer()
-                    Button("Resolve…") { confirmReset = true }
+            if issues.sharedIdentity && !identityDismissed {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label(
+                        "This device shares its sync identity with another copy of the app, as happens after restoring a backup. One of the two needs a new identity and will then have to be paired again.",
+                        systemImage: "person.2.slash"
+                    )
+                    .foregroundStyle(.red)
+                    HStack {
+                        Button(resetting ? "Giving this device a new identity…" : "Give this device a new identity") {
+                            confirmReset = true
+                        }
+                        Button("Keep this device's identity") {
+                            Task {
+                                await sync.keepIdentity()
+                                if sync.error == nil { identityDismissed = true }
+                            }
+                        }
+                    }
                 }
             }
         }

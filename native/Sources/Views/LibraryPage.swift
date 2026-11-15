@@ -8,6 +8,8 @@ struct LibraryPage: View {
     @State private var deleting: [BookMeta] = []
     @State private var creatingFolder = false
     @State private var expanded: Set<[String]> = []
+    /// The list takes the keyboard on arrival, so arrows and Return work at once.
+    @FocusState private var listFocused: Bool
 
     var body: some View {
         @Bindable var model = model
@@ -78,6 +80,13 @@ struct LibraryPage: View {
                             delete: { deleting = selection.compactMap(model.library.book) },
                             clear: { selection = [] })
                     }
+                }
+                .focused($listFocused)
+                .defaultFocus($listFocused, true)
+                .task {
+                    // Once the list is in the window; earlier the request is dropped.
+                    try? await Task.sleep(for: .milliseconds(150))
+                    listFocused = true
                 }
                 .frame(maxWidth: 900)
                 .frame(maxWidth: .infinity)

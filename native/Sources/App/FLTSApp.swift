@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Appearance.apply()
         // Unit tests run inside the app; they must not open a real library.
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
         model.start()
@@ -144,5 +145,31 @@ final class ReaderPreferences {
         t.fontSize = fontSize
         t.language = language
         return t
+    }
+}
+
+/// Light, dark, or the system's choice, under Reading in Settings.
+enum Appearance: String, CaseIterable, Identifiable {
+    case system, light, dark
+    var id: Self { self }
+
+    static let key = "appearance"
+
+    var title: String {
+        switch self {
+        case .system: "Match System"
+        case .light: "Light"
+        case .dark: "Dark"
+        }
+    }
+
+    @MainActor
+    static func apply() {
+        let raw = AppDefaults.store.string(forKey: key) ?? Appearance.system.rawValue
+        switch Appearance(rawValue: raw) ?? .system {
+        case .system: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
     }
 }

@@ -171,6 +171,20 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
     /// The paragraph as the reader has it (including changes not yet laid out).
     func contentParagraph(_ id: Int) -> ParagraphText? { paragraphs[id] }
 
+    /// Keys must reach the reader as soon as it shows; a request made before it
+    /// had a window would have been dropped.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard let window else { return }
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window, self.window === window else { return }
+            let current = window.firstResponder
+            if current == nil || current === window || !(current is NSView) || (current as? NSView)?.window == nil {
+                window.makeFirstResponder(self)
+            }
+        }
+    }
+
     // MARK: Layout
 
     override func layout() {
@@ -385,7 +399,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
                 drawProgress(progress, in: rect)
             } else if let symbol = Self.translateSymbol {
                 let enabled = delegate?.readerCanTranslate(self) ?? true
-                let tinted = symbol.tinted(enabled ? NSColor.secondaryLabelColor : NSColor.quaternaryLabelColor)
+                let tinted = symbol.tinted(enabled ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor.withAlphaComponent(0.35))
                 tinted.draw(in: rect.insetBy(dx: (rect.width - symbol.size.width) / 2, dy: (rect.height - symbol.size.height) / 2))
             }
         }

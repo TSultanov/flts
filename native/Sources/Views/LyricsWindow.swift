@@ -41,6 +41,7 @@ struct LyricsWindow: View {
                 ErrorBanner(message: error) { lyrics.error = nil }
             }
         }
+        .background(Color(nsColor: .windowBackgroundColor))
         .task {
             lyrics.targetLanguage = model.config.config?.targetLanguageId ?? ""
             lyrics.model = model.config.config?.model ?? ""
@@ -149,6 +150,7 @@ private struct TranslationBadge: View {
 private struct LyricsList: View {
     let lyrics: Lyrics
     @Environment(AppModel.self) private var model
+    @State private var visible: [Int] = []
 
     var body: some View {
         let store = model.lyrics
@@ -166,14 +168,23 @@ private struct LyricsList: View {
                             .id(index)
                         }
                     }
+                    .scrollTargetLayout()
                     .padding()
                 }
+                .onScrollTargetVisibilityChange(idType: Int.self) { ids in visible = ids.sorted() }
                 .onChange(of: current) { _, line in
-                    guard let line else { return }
+                    guard let line, !inMiddleHalf(line) else { return }
                     withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(line, anchor: .center) }
                 }
             }
         }
+    }
+
+    /// Re-center only when the line leaves the middle half of the view, as in
+    /// the web app, so the list does not scroll on every line.
+    private func inMiddleHalf(_ line: Int) -> Bool {
+        guard visible.count >= 4, let index = visible.firstIndex(of: line) else { return false }
+        return index >= visible.count / 4 && index < visible.count - visible.count / 4
     }
 
     private func translation(at index: Int) -> LyricsLineTranslation? {
