@@ -1044,6 +1044,22 @@ extension NSView {
         return core
     }
 
+    private func fakeForWord() -> FakeCore {
+        let core = FakeCore()
+        core.getWordInfoHandler = { _, _, _, _ in
+            WordInfo(
+                original: "gato", note: "", isPunctuation: false, contextualTranslations: ["cat"],
+                grammar: Grammar(
+                    originalInitialForm: "gato", targetInitialForm: "cat", partOfSpeech: "noun", plurality: nil,
+                    person: nil, tense: nil, grammaticalCase: nil, other: nil),
+                fullSentenceTranslation: "The cat sleeps.", translationModel: "m", sourceLanguage: "spa",
+                canCreateCard: true, hasCard: false)
+        }
+        core.getSystemDefinitionHandler = { _, _, _ in nil }
+        core.createCardForWordHandler = { _, _, _, _ in throw CoreError.Failed(message: "Anki is not running") }
+        return core
+    }
+
     private func render(_ view: some View, _ name: String, size: NSSize, dir: String, model: AppModel) async throws {
         for (suffix, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             let host = NSHostingView(rootView: view.environment(model).background(Color(nsColor: .windowBackgroundColor)))
@@ -1074,6 +1090,15 @@ extension NSView {
 
         model.deletedBookNotice = "“Cuentos” was deleted, possibly on another device."
         try await render(LibraryPage(), "library-deleted-notice", size: NSSize(width: 820, height: 360), dir: dir, model: model)
+
+        // A failed Anki card, inline in the word bar.
+        let session = BookSession(bookId: UUID(), core: fakeForWord(), events: model.events)
+        session.word.select(WordRef(bookId: session.book.bookId, paragraphId: 0, sentence: 0, word: 0, flatIndex: 0), surface: "gato")
+        for _ in 0..<50 where session.word.info == nil { try await Task.sleep(for: .milliseconds(20)) }
+        await session.word.createCard()
+        try await render(
+            WordPanel(session: session, expanded: .constant(false)).frame(height: 44), "word-card-error",
+            size: NSSize(width: 760, height: 44), dir: dir, model: model)
 
         // The reader with translation waiting for summaries: dim gutter icons.
         final class Waiting: ReaderCanvasDelegate {

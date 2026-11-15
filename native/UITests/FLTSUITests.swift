@@ -49,10 +49,11 @@ final class FLTSScreenshotTour: XCTestCase {
     private func launch(dir: String, dark: Bool = false, smallest: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment = ["FLTS_CONFIG_DIR": dir, "FLTS_DISABLE_SYNC": "1", "FLTS_DISABLE_KEYRING": "1"]
-        app.launchArguments = ["-appearance", dark ? "dark" : "system", "-ApplePersistenceIgnoreState", "YES"]
+        // Only the dark launch pins the setting: an argument outranks what the app saves.
+        app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"] + (dark ? ["-appearance", "dark"] : [])
         if smallest {
             // Below the minimum: the window opens at its smallest allowed size.
-            app.launchArguments += ["-NSWindow Frame main-AppWindow-1", "100 100 400 300 0 0 1728 1083 "]
+            app.launchArguments += ["-NSWindow Frame main-AppWindow-1", "100 450 400 300 0 0 1728 1083 "]
         }
         app.launch()
         return app
@@ -207,6 +208,15 @@ final class FLTSScreenshotTour: XCTestCase {
 
         app.typeKey(",", modifierFlags: .command)
         sleep(2)
+        // The Appearance picker, clicked for real.
+        app.toolbars.buttons["Reading"].firstMatch.click()
+        sleep(1)
+        app.radioButtons["Dark"].firstMatch.click()
+        sleep(1)
+        shot(app.windows.firstMatch, "9-settings-Reading-dark")
+        shot(app.windows.element(boundBy: 1), "9-main-window-dark")
+        app.radioButtons["Match System"].firstMatch.click()
+        sleep(1)
         for tab in ["Translation", "Sync", "Spotify"] {
             let button = app.toolbars.buttons[tab].firstMatch
             if button.exists { button.click() }

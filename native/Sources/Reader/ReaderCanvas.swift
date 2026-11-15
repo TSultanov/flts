@@ -757,8 +757,11 @@ extension NSImage {
     func tinted(_ color: NSColor) -> NSImage {
         let image = NSImage(size: size, flipped: false) { rect in
             self.draw(in: rect)
+            // Source-in replaces the symbol's colour (keeping its shape) with the
+            // tint, alpha included; source-atop would blend a translucent tint
+            // over the black template and leave it near black.
             color.set()
-            rect.fill(using: .sourceAtop)
+            rect.fill(using: .sourceIn)
             return true
         }
         image.isTemplate = false

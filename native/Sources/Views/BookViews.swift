@@ -121,7 +121,10 @@ struct BookReaderScreen: View {
                     }
                 }
                 .onAppear {
-                    session.controls.toggleWordPanel = { wordExpanded.toggle() }
+                    // With no word chosen there are no details to show.
+                    session.controls.toggleWordPanel = {
+                        if wordExpanded || session.word.info != nil { wordExpanded.toggle() }
+                    }
                     session.controls.toggleChapters = toggleChapters
                 }
                 // The panel folds away with its word.
