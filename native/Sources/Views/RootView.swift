@@ -103,6 +103,11 @@ struct BookPage: View {
     @State private var columns = NavigationSplitViewVisibility.detailOnly
     @State private var wordExpanded = false
 
+    private var singleChapter: Bool {
+        guard let session, session.book.loaded else { return false }
+        return session.book.chapters.count <= 1
+    }
+
     var body: some View {
         NavigationSplitView(columnVisibility: $columns) {
             Group {
@@ -118,7 +123,11 @@ struct BookPage: View {
                 if let session {
                     BookReaderScreen(
                         session: session, wordExpanded: $wordExpanded,
-                        toggleChapters: { columns = columns == .detailOnly ? .all : .detailOnly })
+                        toggleChapters: {
+                            // A one-chapter book has no list, as in the web app.
+                            guard session.book.chapters.count > 1 else { return }
+                            columns = columns == .detailOnly ? .all : .detailOnly
+                        })
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -135,6 +144,8 @@ struct BookPage: View {
                 AppToolbarItems()
             }
         }
+        .toolbar(removing: singleChapter ? .sidebarToggle : nil)
+        .onChange(of: columns) { _, c in session?.controls.chaptersShown = c != .detailOnly }
         .task {
             guard let core = model.core else { return }
             let next = BookSession(bookId: bookId, core: core, events: model.events)

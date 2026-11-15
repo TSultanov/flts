@@ -34,3 +34,11 @@ private final class ShellBridge: Shell {
         }
     }
 }
+
+extension Error {
+    /// The core's own message; the generated error describes itself as a debug dump.
+    var userMessage: String {
+        if let core = self as? CoreError, case .Failed(let message) = core { return message }
+        return localizedDescription
+    }
+}

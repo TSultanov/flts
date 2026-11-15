@@ -26,6 +26,8 @@ final class AppModel {
     var selectedBookId: UUID?
     var showImport = false
     var lastError: String?
+    /// Set when the open book was deleted (often on another device).
+    var deletedBookNotice: String?
 
     init() {
         config = ConfigStore(events: events)
@@ -47,7 +49,7 @@ final class AppModel {
         do {
             attach(try CoreClient.start(events: events))
         } catch {
-            phase = .failed(error.localizedDescription)
+            phase = .failed(error.userMessage)
         }
     }
 
@@ -57,7 +59,11 @@ final class AppModel {
             store.attach(core)
         }
         events.on { [weak self] event in
-            if case .bookDeleted(let id) = event, self?.selectedBookId == id { self?.selectedBookId = nil }
+            guard let self, case .bookDeleted(let id) = event, selectedBookId == id else { return }
+            let title = library.book(id)?.title
+            deletedBookNotice = title.map { "“\($0)” was deleted, possibly on another device." }
+                ?? "The book you were reading was deleted, possibly on another device."
+            selectedBookId = nil
         }
         phase = .running
     }
@@ -74,8 +80,8 @@ final class AppModel {
     }
 
     func report(_ error: Error) {
-        lastError = error.localizedDescription
-        log.error("\(error.localizedDescription, privacy: .public)")
+        lastError = error.userMessage
+        log.error("\(error.userMessage, privacy: .public)")
     }
 }
 

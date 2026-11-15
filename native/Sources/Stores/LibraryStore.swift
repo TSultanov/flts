@@ -107,7 +107,7 @@ final class LibraryStore: CoreBound {
             self.tree = tree
             loaded = true
         } catch {
-            self.error = error.localizedDescription
+            self.error = error.userMessage
         }
     }
 
@@ -122,7 +122,7 @@ final class LibraryStore: CoreBound {
             do {
                 try await core.deleteBook(bookId: id)
             } catch {
-                self.error = error.localizedDescription
+                self.error = error.userMessage
             }
         }
         await reload()
@@ -134,7 +134,7 @@ final class LibraryStore: CoreBound {
             do {
                 try await core.moveBook(bookId: id, path: path)
             } catch {
-                self.error = error.localizedDescription
+                self.error = error.userMessage
             }
         }
         pendingFolders.removeAll { $0 == path }
@@ -157,9 +157,11 @@ final class LibraryStore: CoreBound {
     }
 
     @discardableResult
-    func importEpub(_ preview: EpubPreview, sourceLanguageId: String) async throws -> UUID {
+    func importEpub(_ preview: EpubPreview, sourceLanguageId: String, chapters: [Int]? = nil) async throws -> UUID {
         guard let core else { throw CoreError.Failed(message: "Not ready") }
-        let id = try await core.importEpub(preview: preview, sourceLanguageId: sourceLanguageId)
+        let all = Array(preview.chapters().indices)
+        let id = try await core.importEpub(
+            preview: preview, sourceLanguageId: sourceLanguageId, chapters: chapters ?? all)
         await reload()
         return id
     }

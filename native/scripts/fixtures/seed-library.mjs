@@ -1,7 +1,7 @@
 // Seeds a config dir with a translated Spanish book, through the headless
 // Tauri app's E2E bridge and the LLM sim, for the native smoke and UI tests.
 // Needs: cargo build -p app -p e2e-sims --features app/e2e-bridge
-// Usage: node seed-library.mjs <config-dir> [paragraphs=40]
+// Usage: node seed-library.mjs <config-dir> [paragraphs=40] [book.epub]
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -10,7 +10,7 @@ const ROOT = new URL("../../../", import.meta.url).pathname;
 const require = createRequire(ROOT + "site/package.json");
 const WebSocket = require("ws");
 
-const [,, dir, paragraphsArg] = process.argv;
+const [,, dir, paragraphsArg, epubPath] = process.argv;
 const bin = ROOT + "target/debug";
 const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("FLTS_")));
 
@@ -85,6 +85,10 @@ for (let i = 0; i < 20; i++) {
   const t = await call("get_paragraph_texts_batch", { bookId, paragraphIds: [ids[0], ids[ids.length - 2]] });
   if (t.paragraphs.every((p) => p.translated)) break;
   await new Promise(r => setTimeout(r, 500));
+}
+if (epubPath) {
+  const book = await call("parse_epub", { epubBase64: fs.readFileSync(epubPath).toString("base64") });
+  await call("import_epub", { book, sourceLanguageId: "spa" });
 }
 const html = await call("get_paragraph_texts_batch", { bookId, paragraphIds: ids.slice(0, 2) });
 console.log(JSON.stringify({ bookId, paragraphs: ids.length, sample: html.paragraphs[0] }).slice(0, 600));

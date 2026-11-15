@@ -59,12 +59,19 @@ final class BookStore {
         do {
             chapters = try await core.listBookChapters(bookId: bookId)
         } catch {
-            self.error = error.localizedDescription
+            self.error = error.userMessage
         }
     }
 
     func loadSummary() async {
         summary = try? await core.getBookSummaryStatus(bookId: bookId)
+    }
+
+    /// As in the web app: a chapter translates once the previous chapter's
+    /// summary exists (it is the context for the translation).
+    func canTranslate(_ chapterId: Int) -> Bool {
+        guard chapterId > 0, let summary else { return true }
+        return chapterId - 1 < summary.generated.count && summary.generated[chapterId - 1]
     }
 
     func save(chapterId: Int, paragraphId: Int, pageOffset: Int) {
@@ -80,7 +87,7 @@ final class BookStore {
         do {
             try await core.translateChapter(bookId: bookId, chapterId: chapterId, model: model, useCache: true)
         } catch {
-            self.error = error.localizedDescription
+            self.error = error.userMessage
         }
     }
 }

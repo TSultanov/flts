@@ -9,17 +9,34 @@ struct LyricsWindow: View {
             NowPlayingCard()
                 .padding()
             Divider()
-            if lyrics.nowPlaying?.trackId == nil {
+            if lyrics.nowPlaying?.state == .notRunning {
                 ContentUnavailableView(
-                    "Nothing Playing", systemImage: "music.note",
+                    "Spotify Is Not Running", systemImage: "music.note",
+                    description: Text("Open Spotify and play a song to see its lyrics translated."))
+            } else if lyrics.nowPlaying?.trackId == nil || lyrics.nowPlaying?.state == .stopped {
+                ContentUnavailableView(
+                    "Spotify Is Stopped", systemImage: "music.note",
                     description: Text("Play a song in Spotify to see its lyrics translated."))
             } else if !lyrics.lyricsResolved {
-                ProgressView("Finding lyrics…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                ProgressView("Fetching lyrics…").frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let current = lyrics.lyrics {
-                LyricsList(lyrics: current)
+                if current.lines.allSatisfy({ $0.text.trimmingCharacters(in: .whitespaces).isEmpty }) {
+                    ContentUnavailableView("Lyrics Are Empty", systemImage: "text.badge.xmark")
+                } else {
+                    if !current.synced {
+                        Label("Plain lyrics only — karaoke sync unavailable", systemImage: "exclamationmark.triangle")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                            .padding(.top, 8)
+                    }
+                    LyricsList(lyrics: current)
+                }
             } else {
-                ContentUnavailableView("No Lyrics Found", systemImage: "text.badge.xmark")
+                ContentUnavailableView(
+                    "No Lyrics Found", systemImage: "text.badge.xmark",
+                    description: Text("LRCLIB has no lyrics for this track."))
             }
+            StatusLine(phase: lyrics.phase)
             if let error = lyrics.error {
                 ErrorBanner(message: error) { lyrics.error = nil }
             }
@@ -32,6 +49,11 @@ struct LyricsWindow: View {
         .onDisappear { Task { await lyrics.stop() } }
         .onChange(of: model.config.config?.targetLanguageId) { _, id in
             lyrics.targetLanguage = id ?? ""
+            Task { await lyrics.loadTrack() }
+        }
+        // Translations are cached per track, language and model.
+        .onChange(of: model.config.config?.model) { _, m in
+            lyrics.model = m ?? ""
             Task { await lyrics.loadTrack() }
         }
     }
@@ -53,8 +75,13 @@ private struct NowPlayingCard: View {
                     Text([np?.artist, np?.album].compactMap { $0 }.joined(separator: " — "))
                         .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     if let duration = np?.durationMs, duration > 0, let pos = lyrics.position(at: context.date) {
-                        ProgressView(value: Double(pos), total: Double(duration))
-                            .progressViewStyle(.linear)
+                        HStack {
+                            ProgressView(value: Double(pos), total: Double(duration))
+                                .progressViewStyle(.linear)
+                            Text("\(Self.time(pos)) / \(Self.time(duration))")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 Spacer()
@@ -71,10 +98,37 @@ private struct NowPlayingCard: View {
         }
     }
 
+    static func time(_ ms: Int) -> String {
+        let s = max(ms, 0) / 1000
+        return "\(s / 60):" + String(format: "%02d", s % 60)
+    }
+
     private var upNext: TrackMeta? {
         let q = model.lyrics.queue
         guard q?.currentlyPlayingId == model.lyrics.nowPlaying?.trackId else { return nil }
         return q?.upcoming.first
+    }
+}
+
+/// The translation's progress or failure, in words.
+private struct StatusLine: View {
+    let phase: LyricsStore.TranslationPhase
+
+    var body: some View {
+        switch phase {
+        case .translating(let bytes):
+            Text(bytes > 0 ? "Translating (\(bytes) bytes)…" : "Translating…")
+                .font(.caption).foregroundStyle(.secondary).padding(6)
+        case .failed(let message):
+            // Provider errors can be pages of JSON; the full text is in the tooltip.
+            Text("Error: \(message)")
+                .font(.caption).foregroundStyle(.red).padding(6)
+                .lineLimit(2)
+                .truncationMode(.tail)
+                .help(message)
+        default:
+            EmptyView()
+        }
     }
 }
 
@@ -135,7 +189,7 @@ private struct LyricsLineView: View {
 
     var body: some View {
         if line.text.trimmingCharacters(in: .whitespaces).isEmpty {
-            Spacer().frame(height: 8)
+            Text("¶").foregroundStyle(.quaternary)
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 Text(line.text)
@@ -146,13 +200,11 @@ private struct LyricsLineView: View {
                         .font(.callout)
                         .foregroundStyle(.tint)
                 }
-                if isCurrent, let glosses = translation?.glosses, !glosses.isEmpty {
+                if let glosses = translation?.glosses, !glosses.isEmpty {
                     ForEach(glosses, id: \.self) { g in
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text(g.fragment).font(.caption.weight(.semibold))
-                            Text(g.gloss).font(.caption)
-                            if !g.note.isEmpty { Text(g.note).font(.caption).foregroundStyle(.secondary) }
-                        }
+                        Text(g.note.isEmpty ? "\(g.fragment) — \(g.gloss)" : "\(g.fragment) — \(g.gloss) (\(g.note))")
+                            .font(.caption)
+                            .foregroundStyle(isCurrent ? .primary : .secondary)
                     }
                 }
             }

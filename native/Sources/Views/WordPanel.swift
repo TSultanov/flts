@@ -6,7 +6,7 @@ struct WordPanel: View {
     let session: BookSession
     @Binding var expanded: Bool
     /// Upper bound the user drags; the panel is shorter when its content is.
-    @AppStorage("wordPanelHeight") private var height: Double = 320
+    @AppStorage("wordPanelHeight", store: AppDefaults.store) private var height: Double = 320
     @State private var dragStart: Double?
     @State private var contentHeight: Double = 0
 
@@ -134,28 +134,48 @@ private struct WordBar: View {
 private struct WordFooter: View {
     let session: BookSession
     @Environment(AppModel.self) private var model
+    /// Defaults to the model that made the current translation, as in the web app.
+    @State private var retranslateModel = ""
 
     var body: some View {
         let word = session.word
         if let info = word.info {
             HStack {
-                Text("Translated by \(info.translationModel)")
-                    .font(.caption)
+                Text("Translate paragraph again with")
+                    .font(.callout)
                     .foregroundStyle(.secondary)
+                Picker("Model", selection: $retranslateModel) {
+                    let models = model.config.models(for: model.config.config?.translationProvider ?? .google)
+                    if !models.contains(where: { $0.id == retranslateModel }) {
+                        Text(retranslateModel).tag(retranslateModel)
+                    }
+                    ForEach(models) { Text($0.name).tag($0.id) }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 260)
                 Spacer()
                 if let ref = word.selection {
-                    Button("Retranslate Paragraph") {
-                        let modelName = model.config.config?.model ?? info.translationModel
+                    let activity = model.activity.activity(ref.bookId, ref.paragraphId)
+                    if let activity {
+                        ProgressView(
+                            value: Double(activity.progressChars), total: Double(max(activity.expectedChars, 1))
+                        )
+                        .progressViewStyle(.circular)
+                        .controlSize(.small)
+                    }
+                    Button("Translate Again") {
+                        let chosen = retranslateModel
                         Task {
-                            await session.chapter?.translate(
-                                paragraphId: ref.paragraphId, model: modelName, useCache: false)
+                            await session.chapter?.translate(paragraphId: ref.paragraphId, model: chosen, useCache: false)
                         }
                     }
                     .controlSize(.small)
-                    .disabled(model.activity.activity(ref.bookId, ref.paragraphId) != nil)
+                    .disabled(activity != nil)
                     .help("Translate this paragraph again without the cache")
                 }
             }
+            .onAppear { retranslateModel = info.translationModel }
+            .onChange(of: info.translationModel) { _, m in retranslateModel = m }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
             .overlay(alignment: .top) { Divider() }
@@ -190,7 +210,7 @@ struct WordDetails: View {
                         DetailSection("Grammar") {
                             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
                                 row("Part of speech", info.grammar.partOfSpeech)
-                                row("Dictionary form", info.grammar.targetInitialForm)
+                                row("Initial form", info.grammar.originalInitialForm)
                                 row("Number", info.grammar.plurality)
                                 row("Person", info.grammar.person)
                                 row("Tense", info.grammar.tense)
@@ -262,7 +282,7 @@ struct CardButton: View {
         case .created:
             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).help("Card added")
         case .exists:
-            Image(systemName: "checkmark.circle").foregroundStyle(.secondary).help("Card exists")
+            EmptyView()
         }
     }
 

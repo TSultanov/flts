@@ -40,7 +40,7 @@ final class ConfigStore: CoreBound {
             loaded = true
             await loadModels()
         } catch {
-            self.error = error.localizedDescription
+            self.error = error.userMessage
             loaded = true
         }
     }
@@ -81,7 +81,7 @@ final class ConfigStore: CoreBound {
             try await core.updateConfig(config: next)
         } catch {
             config = previous
-            self.error = error.localizedDescription
+            self.error = error.userMessage
         }
     }
 

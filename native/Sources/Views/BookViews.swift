@@ -12,6 +12,8 @@ struct ChaptersList: View {
                 guard let id else { return }
                 Task {
                     await session.open(chapter: id)
+                    // As in the web app, picking a chapter closes the list.
+                    if session.controls.chaptersShown { session.controls.toggleChapters?() }
                     // After the list has taken focus for the click, so keys page again.
                     try? await Task.sleep(for: .milliseconds(80))
                     session.controls.focus()
@@ -19,13 +21,17 @@ struct ChaptersList: View {
             })
         List(selection: selection) {
             ForEach(book.chapters) { chapter in
-                ChapterRow(chapter: chapter, summaryReady: summaryReady(chapter.id))
+                ChapterRow(
+                    chapter: chapter, summaryReady: summaryReady(chapter.id),
+                    summarizing: book.summary?.activelyGenerating == chapter.id)
                     .tag(chapter.id)
                     // Also when the clicked chapter is already the open one.
                     .simultaneousGesture(
                         TapGesture().onEnded {
                             Task {
                                 try? await Task.sleep(for: .milliseconds(80))
+                                // Also when the open chapter was clicked (no selection change).
+                                if session.controls.chaptersShown { session.controls.toggleChapters?() }
                                 session.controls.focus()
                             }
                         })
@@ -60,13 +66,19 @@ struct ChaptersList: View {
 private struct ChapterRow: View {
     let chapter: ChapterMeta
     let summaryReady: Bool?
+    let summarizing: Bool
 
     var body: some View {
         HStack(spacing: 8) {
-            Text(chapter.title.isEmpty ? "Chapter \(chapter.id + 1)" : chapter.title)
+            Text(chapter.title.isEmpty ? "<no title>" : chapter.title)
                 .lineLimit(2)
                 .foregroundStyle(summaryReady == false ? .secondary : .primary)
             Spacer(minLength: 4)
+            if summarizing {
+                ProgressView()
+                    .controlSize(.mini)
+                    .help("Summarizing this chapter for translation context")
+            }
             // As in the web reader: only unfinished chapters show a share.
             if chapter.translationRatio < 1 {
                 Text("\(Int((chapter.translationRatio * 100).rounded()))%")
@@ -112,6 +124,10 @@ struct BookReaderScreen: View {
                     session.controls.toggleWordPanel = { wordExpanded.toggle() }
                     session.controls.toggleChapters = toggleChapters
                 }
+                // The panel folds away with its word.
+                .onChange(of: session.word.selection) { _, ref in
+                    if ref == nil { wordExpanded = false }
+                }
             } else if session.chapter != nil || !session.book.loaded {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -143,11 +159,11 @@ struct BookReaderScreen: View {
         guard let id = session.book.currentChapter,
             let chapter = session.book.chapters.first(where: { $0.id == id })
         else { return "" }
-        return chapter.title.isEmpty ? "Chapter \(id + 1)" : chapter.title
+        return chapter.title.isEmpty ? "<no title>" : chapter.title
     }
 
     private func translateChapter() {
-        guard let id = session.book.currentChapter else { return }
+        guard let id = session.book.currentChapter, session.book.canTranslate(id) else { return }
         let modelName = model.config.config?.model ?? ""
         Task { await session.book.translateChapter(id, model: modelName) }
     }
@@ -156,10 +172,14 @@ struct BookReaderScreen: View {
     private var toolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             if let chapter = session.chapter, chapter.loaded, chapter.untranslatedCount > 0 {
+                let ready = session.book.canTranslate(chapter.chapterId)
                 Button(action: translateChapter) {
                     Label("Translate Chapter", systemImage: "character.bubble")
                 }
-                .help("Translate the \(chapter.untranslatedCount) untranslated paragraphs in this chapter")
+                .disabled(!ready)
+                .help(ready
+                    ? "Translate the \(chapter.untranslatedCount) untranslated paragraphs in this chapter"
+                    : "Waiting for chapter summaries…")
             }
             Button {
                 wordExpanded.toggle()

@@ -69,7 +69,7 @@ final class LyricsStore: CoreBound {
             }
             await refreshSpotifyStatus()
         } catch {
-            self.error = error.localizedDescription
+            self.error = error.userMessage
         }
     }
 
@@ -108,7 +108,7 @@ final class LyricsStore: CoreBound {
                 phase = .translating(bytes: 0)
             }
         } catch {
-            self.error = error.localizedDescription
+            self.error = error.userMessage
         }
     }
 
@@ -167,7 +167,7 @@ final class LyricsStore: CoreBound {
             try await action(core)
             error = nil
         } catch {
-            self.error = error.localizedDescription
+            self.error = error.userMessage
         }
         await refreshSpotifyStatus()
     }

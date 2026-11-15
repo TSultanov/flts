@@ -33,11 +33,6 @@ targets:
         NSAppleEventsUsageDescription: FLTS reads what Spotify is playing to show translated lyrics.
         NSLocalNetworkUsageDescription: FLTS syncs your library with your other devices on the local network.
         NSHumanReadableCopyright: ""
-        CFBundleDocumentTypes:
-          - CFBundleTypeName: EPUB book
-            CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
-            LSItemContentTypes: [org.idpf.epub-container]
     entitlements:
       path: Resources/FLTS.entitlements
       properties:

@@ -1,27 +1,47 @@
 import SwiftUI
 
+enum SettingsTab: String {
+    case translation, reading, sync, anki, spotify, storage
+}
+
 struct SettingsView: View {
+    /// Shared with the toolbar's sync button, which opens the Sync tab.
+    @AppStorage("settingsTab", store: AppDefaults.store) private var tab = SettingsTab.translation
+    @Environment(AppModel.self) private var model
+
     var body: some View {
-        TabView {
+        TabView(selection: $tab) {
             Form { TranslationSettings() }
                 .formStyle(.grouped)
                 .tabItem { Label("Translation", systemImage: "character.bubble") }
+                .tag(SettingsTab.translation)
             Form { ReadingSettings() }
                 .formStyle(.grouped)
                 .tabItem { Label("Reading", systemImage: "textformat.size") }
+                .tag(SettingsTab.reading)
             SyncSettings()
                 .tabItem { Label("Sync", systemImage: "arrow.triangle.2.circlepath") }
+                .tag(SettingsTab.sync)
             Form { AnkiSettings() }
                 .formStyle(.grouped)
                 .tabItem { Label("Anki", systemImage: "rectangle.stack") }
+                .tag(SettingsTab.anki)
             Form { SpotifySettings() }
                 .formStyle(.grouped)
                 .tabItem { Label("Spotify", systemImage: "music.note") }
+                .tag(SettingsTab.spotify)
             Form { StorageSettings() }
                 .formStyle(.grouped)
                 .tabItem { Label("Storage", systemImage: "internaldrive") }
+                .tag(SettingsTab.storage)
         }
-        .frame(width: 560, height: 520)
+        .frame(width: 580, height: 560)
+        // Saves happen on every tab; a failure must show wherever it happened.
+        .overlay(alignment: .bottom) {
+            if let error = model.config.error {
+                ErrorBanner(message: "Could not save: \(error)") { model.config.error = nil }
+            }
+        }
     }
 }
 
@@ -106,8 +126,12 @@ struct TranslationSettings: View {
                         get: { config.translationConcurrency },
                         set: { n in Task { await store.update { $0.translationConcurrency = n } } }), in: 1...16)
             }
-            if let error = store.error {
-                Text(error).foregroundStyle(.red).font(.callout)
+            if config.translationProvider == .google {
+                Section {
+                    PurgeCachesRow(hasKey: !(config.geminiApiKey ?? "").isEmpty)
+                } footer: {
+                    Text("Gemini keeps prompt caches on Google's servers for a while; this removes them now.")
+                }
             }
         } else {
             ProgressView()
@@ -115,13 +139,78 @@ struct TranslationSettings: View {
     }
 }
 
+private struct PurgeCachesRow: View {
+    let hasKey: Bool
+    @Environment(AppModel.self) private var model
+    @State private var busy = false
+    @State private var result: String?
+
+    var body: some View {
+        HStack {
+            Button(busy ? "Removing…" : "Remove Server Caches") {
+                busy = true
+                Task {
+                    do {
+                        let n = try await model.config.purgeGeminiCaches()
+                        result = n == 1 ? "Removed 1 cached item." : "Removed \(n) cached items."
+                    } catch {
+                        result = error.userMessage
+                    }
+                    busy = false
+                }
+            }
+            .disabled(busy || !hasKey)
+            if let result { Text(result).foregroundStyle(.secondary) }
+        }
+    }
+}
+
+/// OpenRouter (and providers that ask for it) group models by family: the
+/// id prefix before "/".
+enum ModelFamilies {
+    static func family(of id: String) -> String {
+        let normalized = id.hasPrefix("~") ? String(id.dropFirst()) : id
+        guard let slash = normalized.firstIndex(of: "/"), slash != normalized.startIndex else { return "other" }
+        return String(normalized[..<slash])
+    }
+
+    static func label(_ family: String) -> String {
+        family == "other"
+            ? "Other" : family.split(separator: "-").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
+    }
+
+    static func families(_ models: [ModelInfo]) -> [String] {
+        Set(models.map { family(of: $0.id) }).sorted { label($0).localizedCompare(label($1)) == .orderedAscending }
+    }
+}
+
 private struct ModelPicker: View {
     let config: AppConfig
     @Environment(AppModel.self) private var model
+    @State private var family = ""
 
     var body: some View {
         let store = model.config
         let models = store.models(for: config.translationProvider)
+        let byFamily = config.translationProvider == .openrouter
+            || store.provider(config.translationProvider)?.modelSelection == "family"
+        let orphan = !models.isEmpty && !models.contains { $0.id == config.model }
+        if byFamily && !models.isEmpty {
+            let families = ModelFamilies.families(models)
+            Picker(
+                "Family",
+                selection: Binding(
+                    get: { families.contains(family) ? family : ModelFamilies.family(of: config.model) },
+                    set: { picked in
+                        family = picked
+                        if let first = models.first(where: { ModelFamilies.family(of: $0.id) == picked }) {
+                            Task { await store.update { $0.model = first.id } }
+                        }
+                    })
+            ) {
+                ForEach(families, id: \.self) { Text(ModelFamilies.label($0)).tag($0) }
+            }
+        }
         HStack {
             Picker(
                 "Model",
@@ -129,10 +218,13 @@ private struct ModelPicker: View {
                     get: { config.model },
                     set: { id in Task { await store.update { $0.model = id } } })
             ) {
-                if !models.contains(where: { $0.id == config.model }) {
+                if orphan {
                     Text(config.model).tag(config.model)
                 }
-                ForEach(models) { Text($0.name).tag($0.id) }
+                let shown = byFamily
+                    ? models.filter { ModelFamilies.family(of: $0.id) == ModelFamilies.family(of: config.model) }
+                    : models
+                ForEach(shown) { Text($0.name).tag($0.id) }
             }
             if store.modelsLoading {
                 ProgressView().controlSize(.small)
@@ -145,6 +237,11 @@ private struct ModelPicker: View {
                 .buttonStyle(.borderless)
                 .help("Refresh the model list")
             }
+        }
+        if orphan {
+            Text("Not in the current catalog")
+                .font(.caption)
+                .foregroundStyle(.orange)
         }
     }
 }
@@ -189,7 +286,7 @@ struct AnkiSettings: View {
                     Task { await store.update { $0.ankiApiKey = v.isEmpty ? nil : v } }
                 }
             } footer: {
-                Text("Requires the AnkiConnect add-on in Anki desktop.")
+                Text("Cards sync to Anki desktop through the [AnkiConnect](https://ankiweb.net/shared/info/2055492159) add-on, every 5 minutes while FLTS runs.")
             }
             Section("Status") {
                 AnkiStatusRow()
@@ -228,12 +325,34 @@ struct AnkiStatusRow: View {
 
 struct SpotifySettings: View {
     @Environment(AppModel.self) private var model
+    @State private var busy: String?
+    @State private var copied = false
+
+    private static let dashboard = URL(string: "https://developer.spotify.com/dashboard")!
+    private static let redirectURI = "http://127.0.0.1:53682/callback"
 
     var body: some View {
         let store = model.config
         let lyrics = model.lyrics
         if let config = store.config {
             Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Enables “Up next” and silent preload of lyrics and translation for upcoming tracks while a playlist or album plays.")
+                    Text("Create a Spotify Developer app at [developer.spotify.com/dashboard](\(Self.dashboard.absoluteString)), add this redirect URI, and paste the app's client ID below. Premium is required for queue access.")
+                    HStack {
+                        Text(Self.redirectURI).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                        Button {
+                            Platform.copy(Self.redirectURI)
+                            copied = true
+                        } label: {
+                            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Copy the redirect URI")
+                    }
+                }
+                .font(.callout)
+                .foregroundStyle(.secondary)
                 CommitField(title: "Client ID", value: config.spotifyClientId ?? "") { v in
                     Task { await store.update { $0.spotifyClientId = v.isEmpty ? nil : v } }
                 }
@@ -241,30 +360,31 @@ struct SpotifySettings: View {
                     if lyrics.webStatus?.connected == true {
                         Label("Connected", systemImage: "checkmark.circle").foregroundStyle(.green)
                         Spacer()
-                        Button("Disconnect") { Task { await lyrics.disconnectWeb() } }
+                        Button(busy == "web" ? "…" : "Disconnect") { run("web") { await lyrics.disconnectWeb() } }
                     } else {
-                        Text(lyrics.webStatus?.lastError ?? "Not connected").foregroundStyle(.secondary)
+                        Text((config.spotifyClientId ?? "").isEmpty ? "Set your Spotify client ID first" : "Not connected")
+                            .foregroundStyle(.secondary)
                         Spacer()
-                        Button("Connect…") {
-                            Task { await lyrics.connectWeb(clientId: config.spotifyClientId ?? "") }
+                        Button(busy == "web" ? "Connecting…" : "Connect…") {
+                            run("web") { await lyrics.connectWeb(clientId: config.spotifyClientId ?? "") }
                         }
                         .disabled((config.spotifyClientId ?? "").isEmpty)
                     }
                 }
+                .disabled(busy != nil)
                 if lyrics.webStatus?.premiumRequired == true {
-                    Text("The queue needs Spotify Premium.").font(.caption).foregroundStyle(.secondary)
+                    Label("Spotify Premium is required for the queue.", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
                 }
             } header: {
                 Text("Spotify Web API")
-            } footer: {
-                Text("Use the client ID of your own Spotify developer app; it lets FLTS preload upcoming tracks.")
             }
             Section("Lyrics") {
                 Stepper(
                     "Preload \(config.spotifyPreloadCount) upcoming tracks",
                     value: Binding(
                         get: { config.spotifyPreloadCount },
-                        set: { n in Task { await store.update { $0.spotifyPreloadCount = n } } }), in: 0...10)
+                        set: { n in Task { await store.update { $0.spotifyPreloadCount = n } } }), in: 0...3)
                 Toggle(
                     "Show the next track",
                     isOn: Binding(
@@ -273,39 +393,56 @@ struct SpotifySettings: View {
             }
             Section {
                 HStack {
-                    if lyrics.cdpStatus?.available == true {
-                        Label("Spotify lyrics bridge is on", systemImage: "checkmark.circle").foregroundStyle(.green)
+                    if let cdp = lyrics.cdpStatus, cdp.available {
+                        Label("Spotify lyrics bridge is active (port \(cdp.port))", systemImage: "checkmark.circle")
+                            .foregroundStyle(.green)
                     } else {
                         Text(lyrics.cdpStatus?.hint ?? "Spotify lyrics bridge is off").foregroundStyle(.secondary)
+                        Spacer()
+                        Button(busy == "cdp" ? "Restarting Spotify…" : "Enable First-Party Lyrics") {
+                            run("cdp") { await lyrics.restartSpotifyWithDevTools() }
+                        }
+                        .disabled(busy != nil)
                     }
-                    Spacer()
-                    Button("Restart Spotify with Bridge") { Task { await lyrics.restartSpotifyWithDevTools() } }
-                        .disabled(lyrics.cdpStatus?.available == true)
                 }
-                Toggle(
-                    "Start Spotify with the bridge at login",
-                    isOn: Binding(
-                        get: { lyrics.loginAgent?.installed ?? false },
-                        set: { on in
-                            Task { on ? await lyrics.installLoginAgent() : await lyrics.removeLoginAgent() }
-                        }))
+                HStack {
+                    Text(lyrics.loginAgent?.installed == true ? "Spotify starts with the bridge at login" : "Start Spotify with the bridge at login")
+                    Spacer()
+                    Button(busy == "agent" ? "…" : (lyrics.loginAgent?.installed == true ? "Disable" : "Enable")) {
+                        let installed = lyrics.loginAgent?.installed == true
+                        run("agent") { installed ? await lyrics.removeLoginAgent() : await lyrics.installLoginAgent() }
+                    }
+                    .disabled(busy != nil)
+                }
+                Text(lyrics.loginAgent?.installed == true
+                    ? "Turn off Spotify's own “Open automatically after you log in” setting so the two don't race."
+                    : "Installs a login item that starts Spotify with the bridge every session, so you don't have to restart it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } header: {
                 Text("Spotify Lyrics Fallback")
             } footer: {
                 Text("When LRCLIB has no lyrics, FLTS can read Spotify's own through the desktop app.")
             }
             if let error = lyrics.error {
-                Text(error).foregroundStyle(.red).font(.callout)
+                Text("Last error: \(error)").foregroundStyle(.red).font(.callout)
             }
         }
         Color.clear.frame(height: 0)
             .task { await lyrics.refreshSpotifyStatus() }
     }
+
+    private func run(_ key: String, _ action: @escaping () async -> Void) {
+        busy = key
+        Task {
+            await action()
+            busy = nil
+        }
+    }
 }
 
 struct StorageSettings: View {
     @Environment(AppModel.self) private var model
-    @State private var purged: String?
 
     var body: some View {
         Section("Library") {
@@ -316,23 +453,6 @@ struct StorageSettings: View {
                     .truncationMode(.middle)
             }
             Button("Show in Finder") { Platform.revealLibrary(model.config.libraryRoot) }
-        }
-        Section {
-            HStack {
-                Button("Purge Gemini Caches") {
-                    Task {
-                        do {
-                            let n = try await model.config.purgeGeminiCaches()
-                            purged = "Removed \(n) cached prompts."
-                        } catch {
-                            purged = error.localizedDescription
-                        }
-                    }
-                }
-                if let purged { Text(purged).foregroundStyle(.secondary) }
-            }
-        } footer: {
-            Text("Gemini keeps prompt caches on Google's servers for a while; this removes them now.")
         }
     }
 }

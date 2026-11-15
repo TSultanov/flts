@@ -277,6 +277,11 @@ uint64_t uniffi_flts_ffi_fn_clone_epubpreview(uint64_t handle, RustCallStatus *_
 void uniffi_flts_ffi_fn_free_epubpreview(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_FN_METHOD_EPUBPREVIEW_CHAPTER_PARAGRAPHS
+#define UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_FN_METHOD_EPUBPREVIEW_CHAPTER_PARAGRAPHS
+RustBuffer uniffi_flts_ffi_fn_method_epubpreview_chapter_paragraphs(uint64_t ptr, int64_t index, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_FN_METHOD_EPUBPREVIEW_CHAPTERS
 #define UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_FN_METHOD_EPUBPREVIEW_CHAPTERS
 RustBuffer uniffi_flts_ffi_fn_method_epubpreview_chapters(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -394,7 +399,7 @@ uint64_t uniffi_flts_ffi_fn_method_fltscore_get_word_info(uint64_t ptr, RustBuff
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_FN_METHOD_FLTSCORE_IMPORT_EPUB
 #define UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_FN_METHOD_FLTSCORE_IMPORT_EPUB
-uint64_t uniffi_flts_ffi_fn_method_fltscore_import_epub(uint64_t ptr, uint64_t preview, RustBuffer source_language_id
+uint64_t uniffi_flts_ffi_fn_method_fltscore_import_epub(uint64_t ptr, uint64_t preview, RustBuffer source_language_id, RustBuffer chapters
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_FN_METHOD_FLTSCORE_IMPORT_PLAIN_TEXT
@@ -875,6 +880,12 @@ void ffi_flts_ffi_rust_future_free_void(uint64_t handle
 #ifndef UNIFFI_FFIDEF_FFI_FLTS_FFI_RUST_FUTURE_COMPLETE_VOID
 #define UNIFFI_FFIDEF_FFI_FLTS_FFI_RUST_FUTURE_COMPLETE_VOID
 void ffi_flts_ffi_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_CHECKSUM_METHOD_EPUBPREVIEW_CHAPTER_PARAGRAPHS
+#define UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_CHECKSUM_METHOD_EPUBPREVIEW_CHAPTER_PARAGRAPHS
+uint16_t uniffi_flts_ffi_checksum_method_epubpreview_chapter_paragraphs(void
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_CHECKSUM_METHOD_EPUBPREVIEW_CHAPTERS

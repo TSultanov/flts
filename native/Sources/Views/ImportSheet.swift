@@ -35,6 +35,9 @@ private struct EpubImport: View {
     @Environment(AppModel.self) private var model
     @State private var picking = false
     @State private var preview: EpubPreview?
+    @State private var chapters: [EpubChapterSummary] = []
+    /// Chosen chapter indices; empty chapters cannot be chosen.
+    @State private var chosen: Set<Int> = []
     @State private var language = "eng"
     @State private var busy = false
     @State private var error: String?
@@ -42,14 +45,22 @@ private struct EpubImport: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let preview {
-                let chapters = preview.chapters()
                 Text(preview.title()).font(.title2.weight(.semibold))
-                Text("\(chapters.count) chapters").foregroundStyle(.secondary)
-                List(Array(chapters.enumerated()), id: \.offset) { _, chapter in
-                    HStack {
-                        Text(chapter.title.isEmpty ? "Untitled" : chapter.title).lineLimit(1)
-                        Spacer()
-                        Text("\(chapter.paragraphCount) ¶").foregroundStyle(.secondary).monospacedDigit()
+                HStack {
+                    Text("Select chapters to import").foregroundStyle(.secondary)
+                    Spacer()
+                    Button(chosen.count == importable.count ? "Select None" : "Select All") {
+                        chosen = chosen.count == importable.count ? [] : Set(importable)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                List {
+                    ForEach(Array(chapters.enumerated()), id: \.offset) { index, chapter in
+                        ChapterChoice(
+                            preview: preview, index: index, chapter: chapter,
+                            isOn: Binding(
+                                get: { chosen.contains(index) },
+                                set: { on in if on { chosen.insert(index) } else { chosen.remove(index) } }))
                     }
                 }
                 .listStyle(.bordered)
@@ -76,7 +87,7 @@ private struct EpubImport: View {
                 Button("Cancel", action: close).keyboardShortcut(.cancelAction)
                 Button("Import") { Task { await importBook() } }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(preview == nil || busy)
+                    .disabled(preview == nil || busy || chosen.isEmpty)
             }
         }
         .padding()
@@ -92,6 +103,10 @@ private struct EpubImport: View {
         }
     }
 
+    private var importable: [Int] {
+        chapters.indices.filter { chapters[$0].paragraphCount > 0 }
+    }
+
     private func parse(_ url: URL) async {
         busy = true
         error = nil
@@ -99,9 +114,12 @@ private struct EpubImport: View {
         do {
             let parsed = try await model.library.parseEpub(at: url)
             language = model.config.suggestedSourceLanguage(for: parsed.language())
+            chapters = parsed.chapters()
+            chosen = Set(importable)
             preview = parsed
         } catch {
-            self.error = error.localizedDescription
+            log.error("EPUB parse failed: \(error.userMessage, privacy: .public)")
+            self.error = "Could not load this file. Please choose a valid EPUB."
         }
     }
 
@@ -110,11 +128,43 @@ private struct EpubImport: View {
         busy = true
         defer { busy = false }
         do {
-            let id = try await model.library.importEpub(preview, sourceLanguageId: language)
-            model.selectedBookId = id
+            _ = try await model.library.importEpub(preview, sourceLanguageId: language, chapters: chosen.sorted())
+            // As in the web app: back to the library, where the book now is.
+            model.selectedBookId = nil
             close()
         } catch {
-            self.error = error.localizedDescription
+            self.error = error.userMessage
+        }
+    }
+}
+
+/// One chapter: a checkbox (none for an empty chapter) that expands to its text.
+private struct ChapterChoice: View {
+    let preview: EpubPreview
+    let index: Int
+    let chapter: EpubChapterSummary
+    @Binding var isOn: Bool
+    @State private var open = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $open) {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(preview.chapterParagraphs(index: index).prefix(40).enumerated()), id: \.offset) { _, p in
+                    Text(p).font(.system(.callout, design: .serif)).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 4)
+        } label: {
+            HStack {
+                Toggle(isOn: $isOn) {
+                    Text(chapter.title.isEmpty ? "<no title>" : chapter.title).lineLimit(1)
+                }
+                .disabled(chapter.paragraphCount == 0)
+                Spacer()
+                Text(chapter.paragraphCount == 0 ? "empty" : "\(chapter.paragraphCount) ¶")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
         }
     }
 }
@@ -158,12 +208,12 @@ private struct TextImport: View {
         busy = true
         defer { busy = false }
         do {
-            let id = try await model.library.importText(
+            _ = try await model.library.importText(
                 title: title.trimmingCharacters(in: .whitespaces), text: text, sourceLanguageId: language)
-            model.selectedBookId = id
+            model.selectedBookId = nil
             close()
         } catch {
-            self.error = error.localizedDescription
+            self.error = error.userMessage
         }
     }
 }
@@ -184,6 +234,7 @@ struct LanguagePicker: View {
 
 struct OnboardingView: View {
     @Environment(AppModel.self) private var model
+    @State private var tried = false
 
     var body: some View {
         VStack(spacing: 20) {
@@ -202,15 +253,30 @@ struct OnboardingView: View {
             Button("Continue") {
                 // Fields save on Return or losing focus; ending editing commits the last one.
                 NSApp.keyWindow?.makeFirstResponder(nil)
+                tried = true
             }
             .keyboardShortcut(.defaultAction)
             .controlSize(.large)
-            .disabled(model.config.config?.targetLanguageId.isEmpty ?? true)
+            if tried, let missing {
+                Text(missing)
+                    .foregroundStyle(.red)
+                    .font(.callout)
+            }
             Text("You can change these later in Settings (⌘,).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Why the app cannot start yet; nil once it can (the page then goes away).
+    private var missing: String? {
+        guard let config = model.config.config else { return nil }
+        if config.targetLanguageId.isEmpty { return "Choose the language you read in." }
+        if !config.hasApiKeyForProvider {
+            return "Paste an API key for \(model.config.provider(config.translationProvider)?.name ?? "the provider")."
+        }
+        return nil
     }
 }

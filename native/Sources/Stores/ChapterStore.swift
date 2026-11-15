@@ -63,7 +63,7 @@ final class ChapterStore {
             changedIds = nil
             revision += 1
         } catch {
-            self.error = error.localizedDescription
+            self.error = error.userMessage
             loaded = true
         }
     }
@@ -129,7 +129,7 @@ final class ChapterStore {
             try await core.translateParagraph(
                 bookId: bookId, paragraphId: paragraphId, model: model, useCache: useCache)
         } catch {
-            self.error = error.localizedDescription
+            self.error = error.userMessage
         }
     }
 

@@ -5,12 +5,18 @@ struct SyncSettings: View {
     @State private var addId = ""
     @State private var addName = ""
     @State private var confirmReset = false
+    @State private var webUI: URL?
 
     var body: some View {
         let sync = model.sync
         let config = model.config
         Form {
             Section {
+                if config.config?.syncEnabled != true {
+                    Text("FLTS syncs your library with your other devices through a built-in Syncthing engine. If you run Syncthing separately on this Mac, stop it before enabling sync.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
                 Toggle(
                     "Sync this library with my other devices",
                     isOn: Binding(
@@ -105,16 +111,33 @@ struct SyncSettings: View {
                 }
             }
 
+            if let webUI {
+                Section {
+                    Link("Open the Syncthing web UI", destination: webUI)
+                } footer: {
+                    Text("For diagnosing sync; FLTS manages these settings itself.")
+                }
+            }
+
             if let error = sync.error {
                 Text(error).foregroundStyle(.red).font(.callout)
             }
         }
         .formStyle(.grouped)
+        .task(id: sync.status.state) { webUI = await sync.webUIURL() }
         .task {
             await sync.refresh()
             await sync.refreshDevices()
         }
         .task(id: sync.status) { await sync.refreshDevices() }
+        // New pairing requests show up without waiting for a status change.
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(4))
+                if config.config?.syncEnabled == true { await sync.refreshDevices() }
+            }
+        }
+        .disabled(sync.busy)
         .confirmationDialog("Reset this device's sync identity?", isPresented: $confirmReset) {
             Button("Reset Identity", role: .destructive) { Task { await sync.resetIdentity() } }
             Button("This Is the Original", role: .none) { Task { await sync.keepIdentity() } }
@@ -133,8 +156,12 @@ struct SyncStatusRow: View {
             case .disabled: Label("Off", systemImage: "pause.circle")
             case .starting: Label("Starting…", systemImage: "hourglass")
             case .online:
-                Label("Up to date · \(status.connectedCount) of \(status.deviceCount) connected", systemImage: "checkmark.circle")
-                    .foregroundStyle(.green)
+                Label(
+                    status.deviceCount == 0
+                        ? "Online — no devices paired yet" : "Online · \(status.connectedCount) of \(status.deviceCount) connected",
+                    systemImage: "checkmark.circle"
+                )
+                .foregroundStyle(.green)
             case .syncing:
                 if let c = status.completion {
                     ProgressView(value: c / 100) { Text("Syncing…") }
@@ -154,19 +181,16 @@ private struct StoreIssuesSection: View {
 
     var body: some View {
         Section("Needs attention") {
-            if issues.newerVersion > 0 {
-                Label("\(issues.newerVersion) items come from a newer FLTS. Update this app to see them.", systemImage: "arrow.up.circle")
+            if issues.newerVersion > 0 || issues.stalled {
+                Label("Another device uses a newer version of the app. Update this device to see its latest changes.", systemImage: "arrow.up.circle")
             }
             if issues.unreadable > 0 {
-                Label("\(issues.unreadable) items could not be read.", systemImage: "exclamationmark.triangle")
+                Label("Some synced data could not be read. Changes from another device may be missing.", systemImage: "exclamationmark.triangle")
             }
             if issues.strangers > 0 {
-                Label("\(issues.strangers) items come from devices not paired with this one.", systemImage: "person.crop.circle.badge.questionmark")
+                Label("The sync folder contains conflict copies that are being ignored.", systemImage: "doc.on.doc")
             }
-            if issues.stalled == true {
-                Label("Syncing has stalled.", systemImage: "tortoise")
-            }
-            if issues.sharedIdentity == true {
+            if issues.sharedIdentity {
                 HStack {
                     Label("Another device shares this device's identity.", systemImage: "person.2.slash")
                     Spacer()

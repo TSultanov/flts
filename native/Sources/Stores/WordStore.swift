@@ -65,7 +65,7 @@ final class WordStore {
             }
         } catch {
             guard gen == generation else { return }
-            self.error = error.localizedDescription
+            self.error = error.userMessage
         }
     }
 
@@ -84,9 +84,19 @@ final class WordStore {
         do {
             let result = try await core.createCardForWord(
                 bookId: ref.bookId, paragraphId: ref.paragraphId, sentenceId: ref.sentence, wordId: ref.word)
-            cardState = result == .alreadyExists ? .exists : .created
+            if result == .alreadyExists {
+                cardState = .exists
+            } else {
+                // A brief check, then the button goes, as in the web app.
+                cardState = .created
+                let ref = selection
+                Task {
+                    try? await Task.sleep(for: .milliseconds(1200))
+                    if selection == ref, cardState == .created { cardState = .exists }
+                }
+            }
         } catch {
-            cardState = .failed(error.localizedDescription)
+            cardState = .failed(error.userMessage)
         }
     }
 }

@@ -11,6 +11,7 @@ final class ReaderControls {
     /// Single-key toggles as in the web reader (W, C), set by the book page.
     var toggleWordPanel: (() -> Void)?
     var toggleChapters: (() -> Void)?
+    var chaptersShown = false
 
     func next() { canvas?.nextSpread() }
     func previous() { canvas?.previousSpread() }
@@ -105,7 +106,11 @@ struct ReaderView: NSViewRepresentable {
         }
 
         func reader(_ canvas: ReaderCanvas, translate paragraphId: Int, useCache: Bool) {
+            // Every way to translate waits for the chapter's summaries; a
+            // retranslation (useCache false on a translated paragraph) does not.
             guard let parent else { return }
+            let translated = canvas.contentParagraph(paragraphId)?.translated ?? false
+            guard translated || parent.book.canTranslate(parent.chapter.chapterId) else { return }
             Task { await parent.chapter.translate(paragraphId: paragraphId, model: parent.model, useCache: useCache) }
         }
 
@@ -126,6 +131,15 @@ struct ReaderView: NSViewRepresentable {
                 if let line = anchor.line { LocalPosition(state: state, line: line).save(book.bookId) }
                 book.save(chapterId: chapterId, paragraphId: anchor.paragraphId, pageOffset: anchor.pageOffset)
             }
+        }
+
+        func readerCanTranslate(_ canvas: ReaderCanvas) -> Bool {
+            guard let parent else { return true }
+            return parent.book.canTranslate(parent.chapter.chapterId)
+        }
+
+        func readerDeselected(_ canvas: ReaderCanvas) {
+            parent?.word.select(nil, surface: nil)
         }
 
         func readerToggle(_ canvas: ReaderCanvas, key: String) -> Bool {

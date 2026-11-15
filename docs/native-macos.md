@@ -137,13 +137,36 @@ framework, so dropping it saves little. Release strips symbols, builds Swift
 with `-Osize` and exports nothing (`-exported_symbols_list /dev/null`), which
 took the export trie from 1.6 MB to 0.3 MB.
 
+## Parity with the web app
+
+The views were checked control by control against their Svelte templates.
+Native follows the web app's behaviour, including:
+
+- summary gating ("Waiting for chapter summaries…");
+- ⌘-click to translate without the cache;
+- the OpenRouter model-family picker;
+- the book-deleted notice;
+- EPUB chapter selection with previews, and returning to the library after import;
+- the Spotify setup hint with the redirect URI.
+
+These differences are kept on purpose, as macOS conventions:
+
+- one API key field for the current provider, saved per field rather than with a Save button;
+- multi-select with a selection bar instead of checkboxes;
+- a folder picker for moving books;
+- word details shown flat rather than in collapsible sections;
+- a Settings window with tabs.
+
 ## Fixtures
 
 `native/scripts/fixtures/seed-library.mjs <dir> [paragraphs]` seeds a config
 dir with a translated Spanish book (through the headless Tauri app's E2E bridge
 and the LLM sim); `sims-up.mjs` starts the sims with scripted translations for
 the translate smoke test. Both need `cargo build -p app -p e2e-sims --features
-app/e2e-bridge`.
+app/e2e-bridge`. `seed-library.mjs <dir> 40 scripts/fixtures/sample.epub` adds a
+multi-chapter book for the UI tour; `import.epub` is what the tour imports
+(`FLTS_UITEST_EPUB`). `scripts/gen-fake-core.py` regenerates `Tests/FakeCore.swift`
+after the core API changes.
 
 ## Not in v1
 

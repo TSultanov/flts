@@ -83,6 +83,15 @@ impl EpubPreview {
         self.0.language.clone()
     }
 
+    /// A chapter's paragraphs as plain text, for previewing before import.
+    pub fn chapter_paragraphs(&self, index: Number) -> Vec<String> {
+        self.0
+            .chapters
+            .get(index.index())
+            .map(|c| c.paragraphs.iter().map(|p| p.text.clone()).collect())
+            .unwrap_or_default()
+    }
+
     pub fn chapters(&self) -> Vec<EpubChapterSummary> {
         self.0
             .chapters
@@ -357,12 +366,26 @@ impl FltsCore {
         Ok(Arc::new(EpubPreview(book)))
     }
 
+    /// Imports the chosen chapters (by index), in book order.
     pub async fn import_epub(
         &self,
         preview: Arc<EpubPreview>,
         source_language_id: String,
+        chapters: Vec<Number>,
     ) -> Result<Uuid, CoreError> {
-        let book = preview.0.clone();
+        let mut book = preview.0.clone();
+        let keep: std::collections::HashSet<usize> =
+            chapters.into_iter().map(Number::index).collect();
+        book.chapters = book
+            .chapters
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| keep.contains(i))
+            .map(|(_, c)| c)
+            .collect();
+        if book.chapters.is_empty() {
+            return Err(CoreError::new("Choose at least one chapter to import."));
+        }
         self.run(move |s| async move { lv::import_epub(State(&s), book, source_language_id).await })
             .await
     }

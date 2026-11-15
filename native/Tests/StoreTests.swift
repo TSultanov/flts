@@ -637,10 +637,12 @@ extension NSView {
             #expect(!preview.title().isEmpty)
             let lang = model.config.suggestedSourceLanguage(for: preview.language())
             #expect(lang == "spa")
-            let id = try await model.library.importEpub(preview, sourceLanguageId: lang)
+            #expect(preview.chapterParagraphs(index: 1).joined(separator: " ").contains("gato"))
+            // Only the chapters chosen (skipping the table of contents).
+            let id = try await model.library.importEpub(preview, sourceLanguageId: lang, chapters: [1, 2])
             let chapters = try await core.listBookChapters(bookId: id)
             print("SMOKE-EPUB chapters \(chapters.map(\.title))")
-            #expect(chapters.contains { $0.title == "Dos" })
+            #expect(chapters.map(\.title) == ["Uno", "Dos"])
         }
 
         let text = try String(contentsOfFile: textFile, encoding: .utf8)
@@ -935,5 +937,24 @@ extension NSView {
             let range = try #require(canvas.text.ranges[id])
             #expect((canvas.text.storage.string as NSString).substring(with: range).hasSuffix(" fin"))
         }
+    }
+}
+
+@MainActor
+@Suite struct SummaryGatingTests {
+    @Test func chapterTranslatesOnceThePreviousSummaryExists() async {
+        let core = FakeCore()
+        let bookId = UUID()
+        core.listBookChaptersHandler = { _ in [] }
+        core.getBookReadingStateHandler = { _ in nil }
+        core.getBookSummaryStatusHandler = { _ in
+            BookSummaryStatus(totalChapters: 3, generated: [true, false, false], activelyGenerating: 1)
+        }
+        let book = BookStore(bookId: bookId, core: core, events: EventHub())
+        #expect(book.canTranslate(1), "before the status loads nothing is held back")
+        await book.load()
+        #expect(book.canTranslate(0))
+        #expect(book.canTranslate(1))
+        #expect(!book.canTranslate(2))
     }
 }

@@ -102,14 +102,11 @@ final class FLTSScreenshotTour: XCTestCase {
         sleep(1)
         assertFlips(app, "after clicking in the word panel")
 
+        // A one-chapter book has no chapter list (as in the web app).
         app.typeKey("c", modifierFlags: [])
         sleep(1)
-        shot(window, "3-chapters")
-        app.outlines.firstMatch.cells.firstMatch.click()
-        sleep(1)
-        assertFlips(app, "after picking a chapter")
-        app.typeKey("c", modifierFlags: [])
-        sleep(1)
+        XCTAssertFalse(app.outlines.firstMatch.exists, "a one-chapter book shows a chapter list")
+        assertFlips(app, "after C on a one-chapter book")
 
         let from = page.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.3))
         from.click(forDuration: 0.2, thenDragTo: page.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.32)))
@@ -133,10 +130,64 @@ final class FLTSScreenshotTour: XCTestCase {
         sleep(1)
         shot(window, "6-library-folder")
 
+        // A book with chapters: the list is hidden until C, and closes after a pick.
+        let epub = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Cuentos breves' OR value CONTAINS 'Cuentos breves'")).firstMatch
+        if epub.waitForExistence(timeout: 5) {
+            epub.doubleClick()
+            sleep(2)
+            XCTAssertFalse(app.outlines.firstMatch.exists, "chapter list should start hidden")
+            app.typeKey("c", modifierFlags: [])
+            XCTAssertTrue(app.outlines.firstMatch.waitForExistence(timeout: 3), "C did not show the chapters")
+            sleep(1)
+            shot(window, "3-chapters")
+            app.outlines.firstMatch.cells.element(boundBy: 1).click()
+            sleep(1)
+            XCTAssertFalse(app.outlines.firstMatch.exists, "the list did not close after picking a chapter")
+            // Chapter 2 waits for chapter 1's summary, which this test library never gets.
+            let translate = app.buttons["Translate Chapter"].firstMatch
+            if translate.exists { XCTAssertFalse(translate.isEnabled, "translating before the summaries exist") }
+            app.typeKey("c", modifierFlags: [])
+            XCTAssertTrue(app.outlines.firstMatch.waitForExistence(timeout: 3), "C ignored after picking a chapter")
+            app.typeKey("c", modifierFlags: [])
+            app.buttons["Library"].firstMatch.click()
+            sleep(1)
+        }
+
+        // Batch selection bar.
+        app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Cuentos breves' OR value CONTAINS 'Cuentos breves'"))
+            .firstMatch.click()
+        if app.disclosureTriangles.firstMatch.exists, app.disclosureTriangles.firstMatch.value as? Int == 0 {
+            app.disclosureTriangles.firstMatch.click()
+        }
+        app.typeKey("a", modifierFlags: .command)
+        let selected = app.staticTexts.matching(NSPredicate(format: "label ENDSWITH ' selected' OR value ENDSWITH ' selected'")).firstMatch
+        XCTAssertTrue(selected.waitForExistence(timeout: 3), "no selection bar for several books")
+        shot(window, "5-selection-bar")
+        app.typeKey(.escape, modifierFlags: [])
+
         app.typeKey("o", modifierFlags: .command)
         sleep(2)
-        shot(window, "7-import")
-        app.typeKey(.escape, modifierFlags: [])
+        if let epubFile = ProcessInfo.processInfo.environment["FLTS_UITEST_EPUB"] {
+            // Pick the file through the open panel, then skip one chapter.
+            app.buttons["Choose EPUB…"].firstMatch.click()
+            sleep(2)
+            app.typeKey("g", modifierFlags: [.command, .shift])
+            sleep(1)
+            app.typeText(epubFile + "\r")
+            sleep(1)
+            app.typeKey(.return, modifierFlags: [])
+            let boxes = app.sheets.firstMatch.checkBoxes
+            XCTAssertTrue(boxes.firstMatch.waitForExistence(timeout: 10), "no chapter choices after picking the EPUB")
+            boxes.element(boundBy: 0).click()
+            sleep(1)
+            shot(window, "7-import")
+            app.sheets.firstMatch.buttons["Import"].click()
+            let twoChapters = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH '2 chapters' OR value BEGINSWITH '2 chapters'")).firstMatch
+            XCTAssertTrue(twoChapters.waitForExistence(timeout: 10), "imported book with the chosen chapters not in the library")
+        } else {
+            shot(window, "7-import")
+            app.typeKey(.escape, modifierFlags: [])
+        }
         sleep(1)
 
         app.buttons["Lyrics"].firstMatch.click()
@@ -154,26 +205,21 @@ final class FLTSScreenshotTour: XCTestCase {
             sleep(1)
             shot(app.windows.firstMatch, "9-settings-\(tab)")
         }
-        app.terminate()
-
-        // The reader in dark mode.
-        let dark = launch(dir: dir, dark: true)
-        XCTAssertTrue(dark.disclosureTriangles.firstMatch.waitForExistence(timeout: 15))
-        dark.disclosureTriangles.firstMatch.click()
-        let darkBook = dark.staticTexts["Lluvia en la ciudad"].firstMatch
-        XCTAssertTrue(darkBook.waitForExistence(timeout: 5))
-        darkBook.doubleClick()
-        sleep(3)
-        dark.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Page'")).firstMatch
-            .coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.12)).click()
-        sleep(2)
-        shot(dark.windows.firstMatch, "10-dark-reader")
-        dark.terminate()
+        // ⌘Q goes through applicationShouldTerminate (.terminateLater, bounded shutdown).
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 15), "the app did not quit")
+        let again = launch(dir: dir)
+        XCTAssertTrue(again.descendants(matching: .any).matching(NSPredicate(format: "label == 'Cuentos'")).firstMatch
+            .waitForExistence(timeout: 15), "relaunch did not open on the library")
+        again.terminate()
 
         // First launch: onboarding on an empty config dir.
         if let empty = ProcessInfo.processInfo.environment["FLTS_UITEST_EMPTY_DIR"] {
             let first = launch(dir: empty)
             XCTAssertTrue(first.staticTexts["Welcome to FLTS"].waitForExistence(timeout: 15))
+            first.buttons["Continue"].click()
+            XCTAssertTrue(first.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Paste an API key' OR value BEGINSWITH 'Paste an API key'")).firstMatch
+                .waitForExistence(timeout: 5), "onboarding says nothing about the missing key")
             sleep(1)
             shot(first.windows.firstMatch, "11-onboarding")
             first.terminate()

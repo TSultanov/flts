@@ -8,6 +8,8 @@ final class SyncStore: CoreBound {
     private(set) var thisDevice: ThisDevice?
     private(set) var devices: [DeviceEntry] = []
     private(set) var pending: [PendingDevice] = []
+    /// True while an action runs; the settings disable their controls.
+    private(set) var busy = false
     var error: String?
 
     private let events: EventHub
@@ -77,11 +79,13 @@ final class SyncStore: CoreBound {
 
     private func run(_ action: (any CoreService) async throws -> Void) async {
         guard let core else { return }
+        busy = true
+        defer { busy = false }
         do {
             try await action(core)
             error = nil
         } catch {
-            self.error = error.localizedDescription
+            self.error = error.userMessage
         }
         await refresh()
         await refreshDevices()
@@ -140,7 +144,7 @@ final class AnkiStore: CoreBound {
             try await core.syncAnkiNow()
             error = nil
         } catch {
-            self.error = error.localizedDescription
+            self.error = error.userMessage
         }
         await refresh()
     }

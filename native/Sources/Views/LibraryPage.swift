@@ -23,6 +23,25 @@ struct LibraryPage: View {
                 }
             } else {
                 List(selection: $selection) {
+                    if let error = model.library.error {
+                        Section {
+                            HStack {
+                                Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
+                                Spacer()
+                                Button("Dismiss") { model.library.error = nil }.buttonStyle(.borderless)
+                            }
+                        }
+                    }
+                    if let notice = model.deletedBookNotice {
+                        Section {
+                            HStack {
+                                Label(notice, systemImage: "trash")
+                                Spacer()
+                                Button("Dismiss") { model.deletedBookNotice = nil }
+                                    .buttonStyle(.borderless)
+                            }
+                        }
+                    }
                     if let progress = model.library.importProgress {
                         Section {
                             ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1))) {
@@ -53,6 +72,15 @@ struct LibraryPage: View {
                 }
                 .onDeleteCommand {
                     deleting = selection.compactMap(model.library.book)
+                }
+                .safeAreaInset(edge: .bottom) {
+                    if selection.count > 1 {
+                        SelectionBar(
+                            count: selection.count,
+                            move: { moving = selection.compactMap(model.library.book) },
+                            delete: { deleting = selection.compactMap(model.library.book) },
+                            clear: { selection = [] })
+                    }
                 }
                 .frame(maxWidth: 900)
                 .frame(maxWidth: .infinity)
@@ -157,9 +185,31 @@ private struct BookRow: View {
 
     private var counts: String {
         let chapters = book.chaptersCount == 1 ? "1 chapter" : "\(book.chaptersCount) chapters"
-        let paragraphs = book.paragraphsCount == 1 ? "1 paragraph" : "\(book.paragraphsCount) paragraphs"
-        let translated = "\(Int((book.translationRatio * 100).rounded()))% translated"
-        return "\(chapters) · \(paragraphs) · \(translated)"
+        // As in the web app: a finished book shows no share.
+        guard book.translationRatio < 1 else { return chapters }
+        return "\(chapters) · \(Int((book.translationRatio * 100).rounded()))% translated"
+    }
+}
+
+/// Shown while several books are selected, so batch actions are visible.
+private struct SelectionBar: View {
+    let count: Int
+    let move: () -> Void
+    let delete: () -> Void
+    let clear: () -> Void
+
+    var body: some View {
+        HStack {
+            Text("\(count) selected").foregroundStyle(.secondary)
+            Spacer()
+            Button("Move…", action: move)
+            Button("Delete…", role: .destructive, action: delete)
+            Button("Clear Selection", action: clear)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
     }
 }
 
@@ -180,6 +230,9 @@ struct MoveBookSheet: View {
                 }
             }
             TextField("Or a new folder inside it", text: $newFolder)
+            Text("Move to: " + destinationLabel)
+                .font(.callout)
+                .foregroundStyle(.secondary)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -195,7 +248,12 @@ struct MoveBookSheet: View {
         }
         .padding(20)
         .frame(width: 420)
-        .onAppear { target = books.first?.path ?? [] }
+    }
+
+    private var destinationLabel: String {
+        let name = newFolder.trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = name.isEmpty ? target : target + [name]
+        return "/" + path.joined(separator: "/")
     }
 }
 

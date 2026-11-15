@@ -579,6 +579,11 @@ fileprivate struct FfiConverterString: FfiConverter {
  */
 public protocol EpubPreviewProtocol: AnyObject, Sendable {
     
+    /**
+     * A chapter's paragraphs as plain text, for previewing before import.
+     */
+    func chapterParagraphs(index: Number)  -> [String]
+    
     func chapters()  -> [EpubChapterSummary]
     
     /**
@@ -644,6 +649,19 @@ open class EpubPreview: EpubPreviewProtocol, @unchecked Sendable {
 
     
 
+    
+    /**
+     * A chapter's paragraphs as plain text, for previewing before import.
+     */
+open func chapterParagraphs(index: Number) -> [String]  {
+    return try!  FfiConverterSequenceString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flts_ffi_fn_method_epubpreview_chapter_paragraphs(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeNumber_lower(index),uniffiCallStatus
+    )
+})
+}
     
 open func chapters() -> [EpubChapterSummary]  {
     return try!  FfiConverterSequenceTypeEpubChapterSummary.lift(try! rustCall() {
@@ -761,7 +779,10 @@ public protocol FltsCoreProtocol: AnyObject, Sendable {
     
     func getWordInfo(bookId: Uuid, paragraphId: Number, sentenceId: Number, wordId: Number) async throws  -> WordInfo?
     
-    func importEpub(preview: EpubPreview, sourceLanguageId: String) async throws  -> Uuid
+    /**
+     * Imports the chosen chapters (by index), in book order.
+     */
+    func importEpub(preview: EpubPreview, sourceLanguageId: String, chapters: [Number]) async throws  -> Uuid
     
     func importPlainText(title: String, text: String, sourceLanguageId: String) async throws  -> Uuid
     
@@ -1169,12 +1190,15 @@ open func getWordInfo(bookId: Uuid, paragraphId: Number, sentenceId: Number, wor
         )
 }
     
-open func importEpub(preview: EpubPreview, sourceLanguageId: String)async throws  -> Uuid  {
+    /**
+     * Imports the chosen chapters (by index), in book order.
+     */
+open func importEpub(preview: EpubPreview, sourceLanguageId: String, chapters: [Number])async throws  -> Uuid  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_flts_ffi_fn_method_fltscore_import_epub(
-                        self.uniffiCloneHandle(),FfiConverterTypeEpubPreview_lower(preview),FfiConverterString.lower(sourceLanguageId)
+                        self.uniffiCloneHandle(),FfiConverterTypeEpubPreview_lower(preview),FfiConverterString.lower(sourceLanguageId),FfiConverterSequenceTypeNumber.lower(chapters)
                 )
             },
             pollFunc: ffi_flts_ffi_rust_future_poll_rust_buffer,
@@ -6724,6 +6748,9 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_flts_ffi_checksum_method_epubpreview_chapter_paragraphs() != 1180) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_flts_ffi_checksum_method_epubpreview_chapters() != 62138) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6784,7 +6811,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_flts_ffi_checksum_method_fltscore_get_word_info() != 37411) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flts_ffi_checksum_method_fltscore_import_epub() != 29857) {
+    if (uniffi_flts_ffi_checksum_method_fltscore_import_epub() != 6462) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flts_ffi_checksum_method_fltscore_import_plain_text() != 12538) {

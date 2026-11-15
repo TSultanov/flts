@@ -17,6 +17,9 @@ protocol ReaderCanvasDelegate: AnyObject {
     func readerTranslationProgress(_ canvas: ReaderCanvas, paragraphId: Int) -> Double?
     /// A plain key the reader does not use itself; true if handled.
     func readerToggle(_ canvas: ReaderCanvas, key: String) -> Bool
+    /// False until the chapter's translation context (summaries) exists.
+    func readerCanTranslate(_ canvas: ReaderCanvas) -> Bool
+    func readerDeselected(_ canvas: ReaderCanvas)
 }
 
 /// Draws a spread of pages from one `ChapterTextLayout` and turns clicks,
@@ -381,7 +384,8 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
             if let progress = delegate?.readerTranslationProgress(self, paragraphId: pid) {
                 drawProgress(progress, in: rect)
             } else if let symbol = Self.translateSymbol {
-                let tinted = symbol.tinted(NSColor.secondaryLabelColor)
+                let enabled = delegate?.readerCanTranslate(self) ?? true
+                let tinted = symbol.tinted(enabled ? NSColor.secondaryLabelColor : NSColor.quaternaryLabelColor)
                 tinted.draw(in: rect.insetBy(dx: (rect.width - symbol.size.width) / 2, dy: (rect.height - symbol.size.height) / 2))
             }
         }
@@ -484,8 +488,12 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         dragged = false
         if let pid = controlHit(point) {
             dragAnchor = nil
-            if delegate?.readerTranslationProgress(self, paragraphId: pid) == nil {
-                delegate?.reader(self, translate: pid, useCache: true)
+            if delegate?.readerTranslationProgress(self, paragraphId: pid) == nil,
+                delegate?.readerCanTranslate(self) ?? true
+            {
+                // ⌘- or ⌃-click translates afresh, skipping the cache (as in the web app).
+                let fresh = !event.modifierFlags.intersection([.command, .control]).isEmpty
+                delegate?.reader(self, translate: pid, useCache: !fresh)
             }
             return
         }
@@ -506,7 +514,14 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         guard dragAnchor != nil, !dragged else { return }
         // A click without a drag: reveal the word's translation and select it.
         let point = convert(event.locationInWindow, from: nil)
-        guard let hit = hit(point), let word = hit.wordIndex else { return }
+        guard let hit = hit(point), let word = hit.wordIndex else {
+            // A click on empty space deselects, as in the web app.
+            if selected != nil {
+                selected = nil
+                delegate?.readerDeselected(self)
+            }
+            return
+        }
         let key = WordKey(paragraphId: hit.paragraphId, wordIndex: word)
         if revealed.contains(key) { revealed.remove(key) } else { revealed.insert(key) }
         selected = (hit.paragraphId, word)
