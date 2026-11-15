@@ -27,7 +27,8 @@ and the book's language, so Swift never parses HTML.
 As in the web app: the window opens on a library page (folders and books;
 double-click or Return opens, the context menu and Delete act on the whole
 selection). An open book is the reader alone; its chapter list slides over the
-page from the left (the Chapters button, C, or ⌃⌘C) and closes on a pick, so the
+page from the left (the Chapters button, C, or ⌃⌘C), takes the keyboard (arrows,
+Return, Escape) and closes on a pick, so the
 text never reflows. The word bar runs along the bottom: word, dictionary form,
 transcription, translations, and Anki; W (or ⌃⌘W) replaces it with the word's
 details, which grow upward over the page. Back to the library is the toolbar's

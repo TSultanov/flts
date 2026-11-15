@@ -192,6 +192,5 @@ private struct ChaptersPanel: View {
                 .contentShape(Rectangle())
                 .onTapGesture(perform: close)
         }
-        .onExitCommand(perform: close)
     }
 }

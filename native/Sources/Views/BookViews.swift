@@ -2,49 +2,51 @@ import SwiftUI
 
 struct ChaptersList: View {
     let session: BookSession
-    @Environment(AppModel.self) private var model
+    /// The row the keyboard is on; a chapter opens on Return or a click.
+    @State private var highlighted: Int?
+    @FocusState private var focused: Bool
+
+    private func open(_ id: Int) {
+        Task {
+            await session.open(chapter: id)
+            // As in the web app, picking a chapter closes the list (also when
+            // it is the open one); closing hands the keys back to the reader.
+            session.controls.hideChapters?()
+            session.controls.focus()
+        }
+    }
 
     var body: some View {
         let book = session.book
-        let selection = Binding<Int?>(
-            get: { book.currentChapter },
-            set: { id in
-                guard let id else { return }
-                Task {
-                    await session.open(chapter: id)
-                    // As in the web app, picking a chapter closes the list.
-                    session.controls.hideChapters?()
-                    // After the list has taken focus for the click, so keys page again.
-                    try? await Task.sleep(for: .milliseconds(80))
-                    session.controls.focus()
-                }
-            })
-        List(selection: selection) {
+        List(selection: $highlighted) {
             ForEach(book.chapters) { chapter in
                 ChapterRow(
                     chapter: chapter, summaryReady: summaryReady(chapter.id),
                     summarizing: book.summary?.activelyGenerating == chapter.id)
                     .tag(chapter.id)
-                    // Also when the clicked chapter is already the open one.
-                    .simultaneousGesture(
-                        TapGesture().onEnded {
-                            Task {
-                                try? await Task.sleep(for: .milliseconds(80))
-                                // Also when the open chapter was clicked (no selection change).
-                                session.controls.hideChapters?()
-                                session.controls.focus()
-                            }
-                        })
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(TapGesture().onEnded { open(chapter.id) })
             }
         }
-        // The reader's keys work here too, so a click in the list never strands them.
-        .onKeyPress(.rightArrow) { session.controls.next(); return .handled }
-        .onKeyPress(.leftArrow) { session.controls.previous(); return .handled }
-        .onKeyPress(.space) { session.controls.next(); return .handled }
-        .onKeyPress(characters: CharacterSet(charactersIn: "cwCW"), phases: .down) { press in
-            if press.characters.lowercased() == "c" { session.controls.toggleChapters?() } else {
-                session.controls.toggleWordPanel?()
+        .focused($focused)
+        .onAppear {
+            highlighted = book.currentChapter
+            // The list takes the keys while it is up: arrows move, Return opens.
+            Task {
+                try? await Task.sleep(for: .milliseconds(120))
+                focused = true
             }
+        }
+        .onKeyPress(.return) {
+            if let highlighted { open(highlighted) }
+            return .handled
+        }
+        .onKeyPress(.escape) {
+            session.controls.hideChapters?()
+            return .handled
+        }
+        .onKeyPress(characters: CharacterSet(charactersIn: "cC"), phases: .down) { _ in
+            session.controls.toggleChapters?()
             return .handled
         }
         .overlay {

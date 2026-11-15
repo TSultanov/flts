@@ -200,7 +200,18 @@ final class FLTSScreenshotTour: XCTestCase {
             XCTAssertFalse(translate.isEnabled, "translating before the summaries exist")
             app.typeKey("c", modifierFlags: [])
             XCTAssertTrue(app.outlines.firstMatch.appears(timeout: 3), "C ignored after picking a chapter")
+            // The list takes the keys while it is up: down, Return opens the next chapter.
+            pause(0.2)
+            app.typeKey(.downArrow, modifierFlags: [])
+            app.typeKey(.return, modifierFlags: [])
+            XCTAssertTrue(until(3) { !app.outlines.firstMatch.exists }, "Return did not pick a chapter")
+            XCTAssertTrue(app.staticTexts["Dos"].firstMatch.appears(timeout: 3), "the keyboard did not open the next chapter")
+            // And Escape closes it without picking.
             app.typeKey("c", modifierFlags: [])
+            XCTAssertTrue(app.outlines.firstMatch.appears(timeout: 3))
+            pause(0.2)
+            app.typeKey(.escape, modifierFlags: [])
+            XCTAssertTrue(until(3) { !app.outlines.firstMatch.exists }, "Escape did not close the chapters")
             app.typeKey("l", modifierFlags: [.command, .option])  // Book › Library
             pause()
         }
