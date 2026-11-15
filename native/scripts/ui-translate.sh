@@ -1,7 +1,8 @@
 #!/bin/bash
 # Drives translation, retranslation and Anki on screen against the e2e sims
-# (no real service is called). Needs the seeded fixture (see ui-tests.sh) and
-# an unlocked, awake screen.
+# (no real service is called), and the Sync settings with the real engine kept
+# to this Mac. Needs the seeded fixture (see ui-tests.sh) and an unlocked,
+# awake screen.
 set -euo pipefail
 NATIVE="$(cd "$(dirname "$0")/.." && pwd)"
 FIXTURE="$NATIVE/build/ui-fixture"
@@ -16,6 +17,7 @@ fi
 mkdir -p "$RUN"
 find "$RUN" -mindepth 1 -delete
 cp -R "$FIXTURE" "$RUN/library"
+cp -R "$FIXTURE" "$RUN/sync-library"
 
 # The sims exit when their stdin closes.
 tail -f /dev/null | node "$NATIVE/scripts/fixtures/sims-up.mjs" "$RUN/text.txt" "$RUN/ports.json" &
@@ -37,6 +39,8 @@ xcodegen generate >/dev/null
 TEST_RUNNER_FLTS_UITEST_SIM_DIR="$RUN/library" \
 TEST_RUNNER_FLTS_UITEST_SIM_TEXT="$RUN/text.txt" \
 TEST_RUNNER_FLTS_UITEST_SIM_LLM="http://127.0.0.1:$LLM/v1beta/" \
+TEST_RUNNER_FLTS_UITEST_SYNC_DIR="$RUN/sync-library" \
   "$NATIVE/scripts/keep-prefs.sh" xcodebuild -project FLTS.xcodeproj -scheme FLTS -configuration Debug \
     -derivedDataPath build/DerivedData -resultBundlePath "$RUN/result.xcresult" \
-    test -only-testing:FLTSUITests/FLTSScreenshotTour/testTranslateWithSims
+    test -only-testing:FLTSUITests/FLTSScreenshotTour/testTranslateWithSims \
+    -only-testing:FLTSUITests/FLTSScreenshotTour/testSyncSettingsLocalEngine

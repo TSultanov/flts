@@ -137,7 +137,11 @@ on) it lands on the right page of that paragraph.
 - `make test-macos-native-ui-translate` (about 15 s plus the build) starts the
   e2e sims and, on screen, imports a text, translates its chapter, reads a
   word, translates the paragraph again with a model picked from the list and
-  adds an Anki card. No real service is called.
+  adds an Anki card. No real service is called. It also turns sync on with
+  the real engine kept to this Mac (`FLTS_SYNC_HERMETIC`) on a throwaway
+  library: online status, pairing code and device ID, renaming the device,
+  the library's sync status button, turning sync off, and quitting with the
+  engine running.
 - A copy of a real library can be checked without touching the original:
   copy `config.json` and `library/` somewhere, turn `syncEnabled` and
   `ankiSyncEnabled` off in the copy, and set `FLTS_GEMINI_BASE_URL` to a dead

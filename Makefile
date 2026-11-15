@@ -78,7 +78,7 @@ test-macos-native-ui: ## run the full native UI tour on a fresh seeded library (
 test-macos-native-ui-quick: ## the core library and reader flow only, for routine runs
 	QUICK=1 "$(NATIVE)/scripts/ui-tests.sh"
 
-test-macos-native-ui-translate: ## translate, retranslate and add an Anki card on screen, against the e2e sims
+test-macos-native-ui-translate: ## on screen: translate and Anki against the e2e sims, sync with the engine kept local
 	"$(NATIVE)/scripts/ui-translate.sh"
 
 install-macos-native: build-macos-native ## replace /Applications/FLTS.app with the native app

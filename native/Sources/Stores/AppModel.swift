@@ -69,14 +69,21 @@ final class AppModel {
     }
 
     /// Bounded so a stuck backend cannot hold the app open.
-    func shutdown() async {
+    /// Stops the core, but never keeps the app from quitting for long: a sync
+    /// engine that is slow to stop is left behind after the limit.
+    func shutdown(limit: Duration = .seconds(8)) async {
         guard let core else { return }
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { await core.shutdown() }
-            group.addTask { try? await Task.sleep(for: .seconds(12)) }
-            await group.next()
-            group.cancelAll()
+        // Not a task group: that would still wait for the core at its end.
+        let (finished, signal) = AsyncStream<Void>.makeStream()
+        Task {
+            await core.shutdown()
+            signal.yield()
         }
+        Task {
+            try? await Task.sleep(for: limit)
+            signal.yield()
+        }
+        for await _ in finished { break }
     }
 
     func report(_ error: Error) {

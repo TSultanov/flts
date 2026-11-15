@@ -247,6 +247,59 @@ final class FLTSScreenshotTour: XCTestCase {
         app.terminate()
     }
 
+    /// Sync settings with the real engine, kept to this Mac (`FLTS_SYNC_HERMETIC`)
+    /// on a throwaway library: turning sync on brings it online with a pairing
+    /// code and device ID, the device renames, and sync turns off again.
+    func testSyncSettingsLocalEngine() throws {
+        guard let dir = ProcessInfo.processInfo.environment["FLTS_UITEST_SYNC_DIR"], !dir.isEmpty else {
+            throw XCTSkip("local sync engine only")
+        }
+        let app = launch(dir: dir, env: ["FLTS_DISABLE_SYNC": "", "FLTS_SYNC_HERMETIC": "1"])
+        XCTAssertTrue(app.staticTexts["Lluvia en la ciudad"].firstMatch.appears(timeout: 15))
+        app.typeKey(",", modifierFlags: .command)
+        let syncTab = app.toolbars.buttons["Sync"].firstMatch
+        XCTAssertTrue(syncTab.appears(timeout: 5))
+        syncTab.click()
+        let toggle = app.switches.firstMatch.exists ? app.switches.firstMatch : app.checkBoxes.firstMatch
+        XCTAssertTrue(toggle.appears(timeout: 5), "no sync toggle")
+        toggle.click()
+        let online = app.staticTexts.matching(NSPredicate(format: "value BEGINSWITH 'Online' OR label BEGINSWITH 'Online'")).firstMatch
+        XCTAssertTrue(online.appears(timeout: 90), "sync did not come online")
+        XCTAssertTrue(app.images["Pairing code"].firstMatch.appears(timeout: 10), "no pairing code")
+        XCTAssertTrue(app.buttons["Copy Device ID"].firstMatch.exists, "no device ID")
+        pause(0.3)
+        shot(app.windows.firstMatch, "s-1-sync-online")
+
+        // Rename this device; the button goes quiet once the name is saved.
+        let name = app.textFields.firstMatch
+        name.click()
+        name.typeKey("a", modifierFlags: .command)
+        name.typeText("Mac de prueba\r")
+        let rename = app.buttons["Rename"].firstMatch
+        XCTAssertTrue(until(15) { !rename.isEnabled }, "the device was not renamed")
+        XCTAssertEqual(name.value as? String, "Mac de prueba")
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "value CONTAINS[c] 'failed' OR value CONTAINS[c] 'error'")).firstMatch.exists,
+            "sync settings show an error")
+
+        // The library's toolbar now carries the sync status.
+        app.typeKey("w", modifierFlags: .command)
+        let status = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Online' OR label BEGINSWITH 'Synced'")).firstMatch
+        XCTAssertTrue(status.appears(timeout: 10), "no sync status in the library toolbar")
+        shot(app.windows.firstMatch, "s-2-library-sync")
+        // Its click opens the Sync tab; turn sync off again there.
+        status.click()
+        XCTAssertTrue(toggle.appears(timeout: 5), "the status button did not open the Sync settings")
+        toggle.click()
+        XCTAssertTrue(until(60) { !online.exists }, "sync did not turn off")
+        // And on again, to quit with the engine running.
+        toggle.click()
+        XCTAssertTrue(online.appears(timeout: 90), "sync did not come back online")
+        let start = Date()
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 20), "the app did not quit with the engine running")
+        print(String(format: "QUIT-WITH-SYNC %.1f s", Date().timeIntervalSince(start)))
+    }
+
     func testLaunchStress() throws {
         guard let dir = ProcessInfo.processInfo.environment["FLTS_UITEST_STRESS_DIR"] else { throw XCTSkip("stress only") }
         var crashes = 0
@@ -472,7 +525,7 @@ final class FLTSScreenshotTour: XCTestCase {
         }
         // ⌘Q goes through applicationShouldTerminate (.terminateLater, bounded shutdown).
         app.typeKey("q", modifierFlags: .command)
-        XCTAssertTrue(until(15) { app.state == .notRunning }, "the app did not quit")
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 15), "the app did not quit")
         // Relaunch, in dark mode (the app's own appearance setting).
         let dark = launch(dir: dir, dark: true)
         XCTAssertTrue(dark.descendants(matching: .any).matching(NSPredicate(format: "label == 'Cuentos'")).firstMatch
