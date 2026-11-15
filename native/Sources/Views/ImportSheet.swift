@@ -252,7 +252,7 @@ struct OnboardingView: View {
             }
             .formStyle(.grouped)
             // About its content's height, so Continue sits right under the fields.
-            .frame(maxWidth: 520, maxHeight: 290)
+            .frame(maxWidth: 520, maxHeight: 215)
             Button("Continue") {
                 // Fields save on Return or losing focus; ending editing commits the last one.
                 NSApp.keyWindow?.makeFirstResponder(nil)

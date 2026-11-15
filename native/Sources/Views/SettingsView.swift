@@ -119,7 +119,7 @@ struct TranslationSettings: View {
                     let provider = config.translationProvider
                     Task { await store.update { $0.setApiKey(key, for: provider) } }
                 }
-                ModelPicker(config: config)
+                if !essentialsOnly { ModelPicker(config: config) }
             }
             if !essentialsOnly {
                 Section("Performance") {

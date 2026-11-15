@@ -114,13 +114,15 @@ on) it lands on the right page of that paragraph.
   fetches).
 - Reader selection: drag selects (Copy, ⌘C, Look Up); a click without a drag
   taps the word. Tested with synthesized mouse events.
-- UI tests (`make test-macos-native-ui`, which seeds a library once and runs on
-  a fresh copy each time):
-  open a book and flip, Settings, and a tour that asserts the arrow keys still
-  page after tapping words, using the word panel and picking a chapter, moves
-  the book into a new folder, opens import, Lyrics and Settings, and (with
-  `FLTS_UITEST_EMPTY_DIR`) shows onboarding; its screenshots are attachments
-  in the result bundle. They need an unlocked session.
+- UI tests (`make test-macos-native-ui`, about a minute; it seeds a library
+  once and runs on a fresh copy each time): one tour that asserts the arrow
+  keys still page after tapping words, using the word panel and picking a
+  chapter, moves a book into a new folder, imports an EPUB and deletes it,
+  opens Lyrics and Settings, quits and relaunches in dark mode, drives the
+  smallest window from the keyboard, and on an empty config dir finishes
+  onboarding, creates a folder and imports a pasted text. Its screenshots are
+  attachments in the result bundle. It needs an unlocked session, and waits by
+  polling, since XCTest's own waits re-check only once a second.
 - Reading position holds across a resize round trip and ten sidebar toggles
   (a sticky anchor; full layouts wait for relayouts to settle).
 - Tauri on all three platforms still builds on the refactored core: macOS
