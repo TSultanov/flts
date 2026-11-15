@@ -23,7 +23,7 @@ extension XCUIElement {
 /// sandboxed and cannot write files).
 @MainActor
 final class FLTSScreenshotTour: XCTestCase {
-    private func launch(dir: String, dark: Bool = false, smallest: Bool = false) -> XCUIApplication {
+    private func launch(dir: String, dark: Bool = false, smallest: Bool = false, animations: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment = ["FLTS_CONFIG_DIR": dir, "FLTS_DISABLE_SYNC": "1", "FLTS_DISABLE_KEYRING": "1"]
         // Only the dark launch pins the setting: an argument outranks what the app saves.
@@ -33,8 +33,10 @@ final class FLTSScreenshotTour: XCTestCase {
         app.launchEnvironment["FLTS_WINDOW_SIZE"] = smallest ? "400x300" : "1180x800"
         // No animations, in the app or of its windows and sheets: the runner
         // waits for the app to settle after each one.
-        app.launchEnvironment["FLTS_NO_ANIMATIONS"] = "1"
-        app.launchArguments += ["-NSAutomaticWindowAnimationsEnabled", "NO", "-NSWindowResizeTime", "0.001"]
+        if !animations {
+            app.launchEnvironment["FLTS_NO_ANIMATIONS"] = "1"
+            app.launchArguments += ["-NSAutomaticWindowAnimationsEnabled", "NO", "-NSWindowResizeTime", "0.001"]
+        }
         app.launch()
         return app
     }
@@ -72,7 +74,7 @@ final class FLTSScreenshotTour: XCTestCase {
         guard let dir = ProcessInfo.processInfo.environment["FLTS_UITEST_STRESS_DIR"] else { throw XCTSkip("stress only") }
         var crashes = 0
         for _ in 0..<60 {
-            let app = launch(dir: dir)
+            let app = launch(dir: dir, animations: true)
             // Past the first second after the library shows, where it has died.
             let shown = app.staticTexts["Lluvia en la ciudad"].firstMatch.appears(timeout: 8)
             pause(1.2)
@@ -108,6 +110,10 @@ final class FLTSScreenshotTour: XCTestCase {
         XCTAssertTrue(app.buttons["Hide word details"].firstMatch.appears(timeout: 3), "W did not expand the word")
         pause()
         shot(window, "2-word-expanded")
+        // Another word with the details open: they stay open while it loads.
+        page.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.12)).click()
+        let hide = app.buttons["Hide word details"].firstMatch
+        XCTAssertFalse(until(0.6) { !hide.exists }, "the details collapsed on tapping another word")
         app.typeKey("w", modifierFlags: [])
         // A click on empty page space deselects the word.
         page.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.985)).click()
@@ -209,7 +215,10 @@ final class FLTSScreenshotTour: XCTestCase {
         // The quick run stops here: library, reader, word panel, chapters and
         // folders are covered; import, Lyrics, Settings, dark mode, the smallest
         // window and onboarding are the full run's.
-        if ProcessInfo.processInfo.environment["FLTS_UITEST_QUICK"]?.isEmpty == false { return }
+        if ProcessInfo.processInfo.environment["FLTS_UITEST_QUICK"]?.isEmpty == false {
+            app.terminate()
+            return
+        }
 
         app.typeKey("o", modifierFlags: .command)
         pause(0.15)
@@ -291,11 +300,10 @@ final class FLTSScreenshotTour: XCTestCase {
         shot(dark.windows.firstMatch, "10-dark-reader")
         dark.typeKey("l", modifierFlags: [.command, .shift])
         let darkLyrics = dark.windows["Lyrics"]
-        if darkLyrics.appears(timeout: 5) {
-            pause(0.15)
-            shot(darkLyrics, "10-dark-lyrics")
-            dark.typeKey("w", modifierFlags: .command)
-        }
+        XCTAssertTrue(darkLyrics.appears(timeout: 5), "⇧⌘L did not open Lyrics from the reader")
+        pause(0.15)
+        shot(darkLyrics, "10-dark-lyrics")
+        dark.typeKey("w", modifierFlags: .command)
         dark.terminate()
 
         // The smallest window, driven from the keyboard alone: arrows and

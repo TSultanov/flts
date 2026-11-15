@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// The web app's top bar on every page: sync status, Anki sync, Lyrics.
+/// The library's status items: sync status, Anki sync, Lyrics. The reader's
+/// toolbar is left to the book; Lyrics is also in the Window menu (⇧⌘L).
 struct AppToolbarItems: ToolbarContent {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow

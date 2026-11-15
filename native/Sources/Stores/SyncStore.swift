@@ -142,7 +142,8 @@ final class AnkiStore: CoreBound {
             switch status.state {
             case .unreachable: reachable = false
             case .ok, .err: reachable = true
-            case .idle, .syncing: if status.lastFinishedAtMs != nil { reachable = true }
+            // A retry in progress says nothing yet; keep the last answer.
+            case .idle, .syncing: break
             }
         }
     }

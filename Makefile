@@ -69,7 +69,7 @@ build-macos-native: ## build the native SwiftUI macOS app (Release, core in rele
 		-configuration Release -derivedDataPath build/DerivedData build
 
 test-macos-native: ## run the native app's unit tests
-	cd "$(NATIVE)" && xcodegen generate && xcodebuild -project FLTS.xcodeproj -scheme FLTS \
+	cd "$(NATIVE)" && xcodegen generate && scripts/keep-prefs.sh xcodebuild -project FLTS.xcodeproj -scheme FLTS \
 		-configuration Debug -derivedDataPath build/DerivedData test -only-testing:FLTSTests
 
 test-macos-native-ui: ## run the full native UI tour on a fresh seeded library (needs an unlocked screen)

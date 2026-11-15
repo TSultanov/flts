@@ -42,8 +42,12 @@ final class WordStore {
         guard ref != selection else { return }
         selection = ref
         self.surface = surface
-        info = nil
-        definition = nil
+        // Going to another word keeps the last one until the new one loads,
+        // so open details do not collapse and reopen in between.
+        if ref == nil {
+            info = nil
+            definition = nil
+        }
         cardState = .idle
         Task { await reload() }
     }
@@ -59,12 +63,15 @@ final class WordStore {
                 bookId: ref.bookId, paragraphId: ref.paragraphId, sentenceId: ref.sentence, wordId: ref.word)
             guard gen == generation else { return }
             self.info = info
+            if info == nil { definition = nil }
             if let info, info.hasCard, cardState == .idle { cardState = .exists }
             if let info, !info.isPunctuation {
                 await loadDefinition(info, gen: gen)
             }
         } catch {
             guard gen == generation else { return }
+            info = nil
+            definition = nil
             self.error = error.userMessage
         }
     }

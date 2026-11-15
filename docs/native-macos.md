@@ -132,7 +132,7 @@ on) it lands on the right page of that paragraph.
   `FLTS_UITEST_STRESS_DIR` enables a 60-launch stress test. The window
   size comes from `FLTS_WINDOW_SIZE`, which the app applies itself: a frame
   pinned by a launch argument made it die at launch in AppKit's toolbar layout.
-- Reading position holds across a resize round trip and ten sidebar toggles
+- Reading position holds across a resize round trip
   (a sticky anchor; full layouts wait for relayouts to settle).
 - Tauri on all three platforms still builds on the refactored core: macOS
   release, a signed iOS `.ipa`, a signed Android APK.

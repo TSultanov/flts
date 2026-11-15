@@ -480,6 +480,32 @@ extension NSView {
         return canvas
     }
 
+    /// A trackpad swipe: `began`, some `changed`, `ended`, then its glide.
+    private func swipe(_ canvas: ReaderCanvas, dx: Int32) {
+        func event(_ dx: Int32, phase: Int64, momentum: Int64 = 0) -> NSEvent {
+            let e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: 0, wheel2: dx, wheel3: 0)!
+            e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+            e.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
+            e.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentum)
+            return NSEvent(cgEvent: e)!
+        }
+        canvas.scrollWheel(with: event(dx, phase: 1))
+        for _ in 0..<4 { canvas.scrollWheel(with: event(dx, phase: 2)) }
+        canvas.scrollWheel(with: event(0, phase: 4))
+        for _ in 0..<6 { canvas.scrollWheel(with: event(dx, phase: 0, momentum: 2)) }
+    }
+
+    /// One swipe turns one spread, in either direction, however long it glides.
+    @Test func swipeTurnsOneSpread() async {
+        let canvas = await open(nil, chapter())
+        let step = canvas.columns
+        canvas.go(toPage: step * 3, animated: false)
+        swipe(canvas, dx: 40)
+        #expect(canvas.spreadStart == step * 2, "a swipe back")
+        swipe(canvas, dx: -40)
+        #expect(canvas.spreadStart == step * 3, "a swipe forward")
+    }
+
     /// Saving and reopening must land on the same top line, from any page.
     @Test func savedPositionReopensInPlace() async {
         let paragraphs = chapter()

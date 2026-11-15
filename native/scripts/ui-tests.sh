@@ -16,13 +16,11 @@ rm -rf "$RUN"
 mkdir -p "$RUN/empty"
 cp -R "$FIXTURE" "$RUN/library"
 
-# AppKit saves window frames under the app's real preferences; put them back.
-PREFS="$RUN/prefs.plist"
-defaults export com.TS.FLTS "$PREFS" 2>/dev/null || true
-restore_prefs() {
-  if [ -s "$PREFS" ]; then defaults import com.TS.FLTS "$PREFS"; fi
-}
-trap restore_prefs EXIT
+# The tests launch the app by bundle id, which would close a copy in use.
+if pgrep -lf "/FLTS.app/Contents/MacOS/" | grep -v "$NATIVE/build/" >/dev/null; then
+  echo "FLTS is running; quit it before the UI tests (they relaunch the app)." >&2
+  exit 1
+fi
 
 cd "$NATIVE"
 xcodegen generate >/dev/null
@@ -30,6 +28,6 @@ TEST_RUNNER_FLTS_UITEST_CONFIG_DIR="$RUN/library" \
 TEST_RUNNER_FLTS_UITEST_EMPTY_DIR="$RUN/empty" \
 TEST_RUNNER_FLTS_UITEST_EPUB="$NATIVE/scripts/fixtures/import.epub" \
 TEST_RUNNER_FLTS_UITEST_QUICK="${QUICK:-}" \
-  xcodebuild -project FLTS.xcodeproj -scheme FLTS -configuration Debug \
+  "$NATIVE/scripts/keep-prefs.sh" xcodebuild -project FLTS.xcodeproj -scheme FLTS -configuration Debug \
     -derivedDataPath build/DerivedData -resultBundlePath "$RUN/result.xcresult" \
     test -only-testing:FLTSUITests

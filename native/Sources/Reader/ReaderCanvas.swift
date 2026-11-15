@@ -385,9 +385,9 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
                 .font: font, .foregroundColor: NSColor.controlAccentColor, .paragraphStyle: style,
             ]
             var size = (translation as NSString).size(withAttributes: attrs)
-            // Shrink to the word's width, but stay legible, then let it overflow centered.
+            // Shrink to the word's width, down to 60%, then let it overflow centered.
             if size.width > glyph.width, glyph.width > 0 {
-                let scale = max(glyph.width / size.width, 0.75)
+                let scale = max(glyph.width / size.width, 0.6)
                 let shrunk = NSFont.systemFont(ofSize: font.pointSize * scale)
                 attrs[.font] = shrunk
                 size = (translation as NSString).size(withAttributes: attrs)
@@ -767,28 +767,31 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
     }
 
     private var lastWheelFlip: TimeInterval = 0
+    /// This swipe has turned its spread; the rest of it, and its glide, do nothing.
+    private var swipeConsumed = false
 
     override func scrollWheel(with event: NSEvent) {
-        guard event.hasPreciseScrollingDeltas else {
-            // One spread per notch burst, not per event.
+        // A wheel, or a device that reports no gesture phases: one spread per burst.
+        guard event.hasPreciseScrollingDeltas, !(event.phase.isEmpty && event.momentumPhase.isEmpty) else {
             guard event.timestamp - lastWheelFlip > 0.25 else { return }
             lastWheelFlip = event.timestamp
             if event.scrollingDeltaY < 0 || event.scrollingDeltaX < 0 { nextSpread() } else { previousSpread() }
             return
         }
-        // The glide after a swipe must not turn a second spread.
-        guard event.momentumPhase.isEmpty else { return }
-        if event.phase == .began { swipeAccumulator = 0 }
+        if event.phase == .began {
+            swipeAccumulator = 0
+            swipeConsumed = false
+        }
+        guard !swipeConsumed else { return }
         let delta = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) ? event.scrollingDeltaX : event.scrollingDeltaY
         swipeAccumulator += delta
         if swipeAccumulator < -60 {
-            swipeAccumulator = .infinity
+            swipeConsumed = true
             nextSpread()
-        } else if swipeAccumulator > 60, swipeAccumulator.isFinite {
-            swipeAccumulator = -.infinity
+        } else if swipeAccumulator > 60 {
+            swipeConsumed = true
             previousSpread()
         }
-        if event.phase == .ended || event.phase == .cancelled { swipeAccumulator = 0 }
     }
 
     /// Shows the page holding a paragraph (e.g. one selected elsewhere).
