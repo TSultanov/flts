@@ -506,13 +506,43 @@ extension NSView {
         #expect(canvas.spreadStart == step * 3, "a swipe forward")
     }
 
+    /// Reopened on an odd page, paging back to the start never shows a page twice:
+    /// the first spread has a blank left page instead.
+    @Test func noPageIsShownInTwoSpreads() async {
+        let paragraphs = chapter()
+        let first = await open(nil, paragraphs)
+        guard first.columns == 2 else { return }
+        first.go(toPage: 4, animated: false)
+        var canvas = first
+        // Find a saved position that reopens on an odd page.
+        for page in stride(from: 2, to: first.pageCount, by: 2) {
+            first.go(toPage: page, animated: false)
+            guard let saved = first.currentAnchor() else { continue }
+            let reopened = await open(saved, paragraphs)
+            if reopened.spreadStart % 2 == 1 {
+                canvas = reopened
+                break
+            }
+        }
+        var seen: Set<Int> = []
+        for _ in 0..<canvas.pageCount {
+            let shown = (canvas.spreadStart..<canvas.spreadStart + canvas.columns).filter { $0 >= 0 }
+            #expect(seen.isDisjoint(with: shown), "pages \(shown) shown again")
+            seen.formUnion(shown)
+            let before = canvas.spreadStart
+            canvas.previousSpread()
+            if canvas.spreadStart == before { break }
+        }
+        #expect(seen.contains(0), "paging back did not reach the first page")
+    }
+
     /// Saving and reopening must land on the same top line, from any page.
     @Test func savedPositionReopensInPlace() async {
         let paragraphs = chapter()
         let first = await open(nil, paragraphs)
         for page in stride(from: 0, to: first.pageCount, by: 7) {
             first.go(toPage: page, animated: false)
-            guard let saved = first.currentAnchor(), let top = first.text.lineAnchor(forPage: page) else { continue }
+            guard let saved = first.currentAnchor(), let top = first.text.lineAnchor(forPage: first.spreadStart) else { continue }
             let reopened = await open(saved, paragraphs)
             #expect(reopened.text.lineAnchor(forPage: reopened.spreadStart) == top, "page \(page)")
             // Another device's position (no line) lands in the right paragraph.
@@ -748,7 +778,7 @@ extension NSView {
 
     private func check(_ canvas: ReaderCanvas, taps: inout Int, misses: inout [String], split: inout Int) {
         var rng = SystemRandomNumberGenerator()
-        for page in canvas.spreadStart..<min(canvas.spreadStart + canvas.columns, canvas.pageCount) {
+        for page in max(canvas.spreadStart, 0)..<min(canvas.spreadStart + canvas.columns, canvas.pageCount) {
             let band = canvas.text.pages[page]
             var candidates: [(Int, Int, [CGRect])] = []
             for (pid, p) in canvas.text.paragraphs {

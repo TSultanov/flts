@@ -41,7 +41,11 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
     var inLiveResizeOverride = false
     weak var delegate: ReaderCanvasDelegate?
 
+    /// The page in the first column. Spreads keep the pairing the chapter
+    /// opened with, so no page is ever shown in two of them; when that pairing
+    /// is odd, the first spread starts one page early, with a blank left page.
     private(set) var spreadStart = 0
+    private var firstVisiblePage: Int { max(spreadStart, 0) }
     private(set) var columns = 1
     private var columnWidth: CGFloat = 400
     private var laidOutSize: CGSize = .zero
@@ -139,7 +143,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         let batch = ids.compactMap { pendingChanges.removeValue(forKey: $0) }
         if !batch.isEmpty {
             textSelection = nil
-            let keep = text.lineAnchor(forPage: spreadStart)
+            let keep = text.lineAnchor(forPage: firstVisiblePage)
             text.replace(batch)
             text.layout(width: columnWidth, pageHeight: text.pageHeight, breakAt: keep)
             spreadStart = keep.flatMap { text.page(of: $0) } ?? min(spreadStart, text.pages.count - 1)
@@ -161,8 +165,9 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
 
     func currentAnchor() -> ReadingAnchor? {
         if text.pages.isEmpty || order.isEmpty { return pendingAnchor }
-        guard let a = text.anchor(forPage: spreadStart) else { return nil }
-        return ReadingAnchor(paragraphId: a.paragraphId, pageOffset: a.pageOffset, line: text.lineAnchor(forPage: spreadStart))
+        guard let a = text.anchor(forPage: firstVisiblePage) else { return nil }
+        return ReadingAnchor(
+            paragraphId: a.paragraphId, pageOffset: a.pageOffset, line: text.lineAnchor(forPage: firstVisiblePage))
     }
 
     var pageCount: Int { text.pages.count }
@@ -273,7 +278,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
     /// Swaps in the full layout, re-cut so the visible line still starts the page.
     private func adopt(_ full: ChapterTextLayout, generation gen: Int) {
         guard gen == generation else { return }
-        let keep = text.lineAnchor(forPage: spreadStart)
+        let keep = text.lineAnchor(forPage: firstVisiblePage)
         full.paginate(breakAt: keep)
         let selectedBefore = selected
         textSelection = nil
@@ -303,6 +308,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         guard let ctx = NSGraphicsContext.current?.cgContext, !text.pages.isEmpty else { return }
         for column in 0..<columns {
             let index = spreadStart + column
+            guard index >= 0 else { continue }
             guard index < text.pages.count else { break }
             drawPage(text.pages[index], at: CGPoint(x: columnX(column), y: margins.top), in: ctx)
         }
@@ -385,9 +391,9 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
                 .font: font, .foregroundColor: NSColor.controlAccentColor, .paragraphStyle: style,
             ]
             var size = (translation as NSString).size(withAttributes: attrs)
-            // Shrink to the word's width, down to 60%, then let it overflow centered.
+            // Shrink to the word's width, as the web app does.
             if size.width > glyph.width, glyph.width > 0 {
-                let scale = max(glyph.width / size.width, 0.6)
+                let scale = glyph.width / size.width
                 let shrunk = NSFont.systemFont(ofSize: font.pointSize * scale)
                 attrs[.font] = shrunk
                 size = (translation as NSString).size(withAttributes: attrs)
@@ -454,8 +460,8 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         guard !text.pages.isEmpty else { return }
         let last = min(spreadStart + columns, text.pages.count)
         var label =
-            columns > 1 && last - spreadStart > 1
-            ? "\(spreadStart + 1)–\(last) of \(text.pages.count)" : "\(spreadStart + 1) of \(text.pages.count)"
+            columns > 1 && last - firstVisiblePage > 1
+            ? "\(firstVisiblePage + 1)–\(last) of \(text.pages.count)" : "\(firstVisiblePage + 1) of \(text.pages.count)"
         if isProvisional { label = "…" }
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
@@ -471,6 +477,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
     private func locate(_ viewPoint: CGPoint) -> (column: Int, point: CGPoint)? {
         for column in 0..<columns {
             let index = spreadStart + column
+            guard index >= 0 else { continue }
             guard index < text.pages.count else { break }
             let page = text.pages[index]
             let x0 = columnX(column)
@@ -487,6 +494,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
     private func controlHit(_ viewPoint: CGPoint) -> Int? {
         for column in 0..<columns {
             let index = spreadStart + column
+            guard index >= 0 else { continue }
             guard index < text.pages.count else { break }
             let page = text.pages[index]
             let origin = CGPoint(x: columnX(column), y: margins.top)
@@ -599,6 +607,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         var out: [(Int, CGRect)] = []
         for column in 0..<columns {
             let index = spreadStart + column
+            guard index >= 0 else { continue }
             guard index < text.pages.count else { break }
             let page = text.pages[index]
             let origin = CGPoint(x: columnX(column), y: margins.top)
@@ -691,13 +700,13 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
     override func accessibilityRoleDescription() -> String? { "book page" }
 
     override func accessibilityLabel() -> String? {
-        isProvisional ? "Page" : "Pages \(spreadStart + 1) to \(min(spreadStart + columns, text.pages.count)) of \(text.pages.count)"
+        isProvisional ? "Page" : "Pages \(firstVisiblePage + 1) to \(min(spreadStart + columns, text.pages.count)) of \(text.pages.count)"
     }
 
     /// The text on the visible pages, so VoiceOver can read the spread.
     override func accessibilityValue() -> Any? {
         guard !text.pages.isEmpty else { return nil }
-        let first = text.pages[spreadStart]
+        let first = text.pages[firstVisiblePage]
         let last = text.pages[min(spreadStart + columns, text.pages.count) - 1]
         guard let start = text.layoutManager.textLayoutFragment(for: CGPoint(x: 1, y: first.top + 1)),
             let end = text.layoutManager.textLayoutFragment(for: CGPoint(x: 1, y: max(last.bottom - 1, first.top + 1)))
@@ -722,7 +731,11 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
     // MARK: Paging
 
     func go(toPage page: Int, animated: Bool = true) {
-        let target = min(max(page, 0), max(text.pages.count - 1, 0))
+        guard !text.pages.isEmpty else { return }
+        let clamped = min(max(page, 0), text.pages.count - 1)
+        // The spread of the current pairing that holds the page.
+        let phase = ((spreadStart % columns) + columns) % columns
+        let target = clamped - (((clamped - phase) % columns) + columns) % columns
         guard target != spreadStart else { return }
         if animated, !AppDefaults.animationsOff, let layer {
             let transition = CATransition()
@@ -736,7 +749,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         textSelection = nil
         sticky = currentAnchor()
         needsDisplay = true
-        delegate?.reader(self, movedTo: spreadStart, of: text.pages.count)
+        delegate?.reader(self, movedTo: firstVisiblePage, of: text.pages.count)
         NSAccessibility.post(element: self, notification: .valueChanged)
     }
 
@@ -748,10 +761,7 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         case .rightArrow?, .pageDown?, .downArrow?: nextSpread()
         case .leftArrow?, .pageUp?, .upArrow?: previousSpread()
         case .home?: go(toPage: 0)
-        case .end?:
-            // The last spread in step with the current one, not the last page alone.
-            let last = max(text.pages.count - 1, 0)
-            go(toPage: last >= spreadStart ? spreadStart + (last - spreadStart) / columns * columns : last)
+        case .end?: go(toPage: text.pages.count - 1)
         default:
             let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
             if key == " " {
