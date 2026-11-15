@@ -30,10 +30,14 @@ struct LibraryPage: View {
     /// Right opens the selected folder, Left closes it, Return toggles it.
     private func folderKey(open: Bool?) -> KeyPress.Result {
         guard let folder = selectedFolder else { return .ignored }
+        set(folder, open: open)
+        return .handled
+    }
+
+    private func set(_ folder: LibraryFolder, open: Bool?) {
         var expanded = model.library.expandedFolders
         if open ?? !expanded.contains(folder.path) { expanded.insert(folder.path) } else { expanded.remove(folder.path) }
         model.library.expandedFolders = expanded
-        return .handled
     }
 
     private var showsSelectionBar: Bool {
@@ -107,8 +111,13 @@ struct LibraryPage: View {
                     }
                 } primaryAction: { ids in
                     guard ids.count == 1, let id = ids.first else { return }
-                    // A folder in the selection opens or closes; a book opens.
-                    if model.library.book(id) != nil { open(id) } else { _ = folderKey(open: nil) }
+                    // A book opens; a folder opens or closes (on iOS a tap on its
+                    // row arrives here, not through the selection).
+                    if model.library.book(id) != nil {
+                        open(id)
+                    } else if let folder = model.library.tree.allFolders.first(where: { $0.selectionID == id }) {
+                        set(folder, open: nil)
+                    }
                 }
                 .onKeyPress(.rightArrow) { folderKey(open: true) }
                 .onKeyPress(.leftArrow) { folderKey(open: false) }
@@ -240,8 +249,11 @@ private struct FolderContents: View {
                 Label(child.name, systemImage: "folder")
                     .font(.headline)
             }
-            // Selectable, so the arrow keys reach a folder, open or closed.
+            // Selectable on the Mac, so the arrow keys reach a folder, open or
+            // closed. On iOS a selectable row would swallow the tap that opens it.
+            #if os(macOS)
             .tag(child.selectionID)
+            #endif
         }
         ForEach(folder.books) { book in
             BookRow(book: book)
