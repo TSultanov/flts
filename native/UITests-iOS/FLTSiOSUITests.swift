@@ -287,6 +287,37 @@ final class FLTSiOSTour: XCTestCase {
         app.buttons["Cancel"].firstMatch.tap()
         app.terminate()
 
+        // Dark mode (the app's own appearance setting), and several books selected.
+        let dark = XCUIApplication()
+        dark.launchEnvironment = app.launchEnvironment
+        dark.launchArguments = ["-appearance", "dark"]
+        dark.launch()
+        let darkBook = dark.staticTexts["Lluvia en la ciudad"].firstMatch
+        XCTAssertTrue(darkBook.appears(timeout: 30))
+        dark.buttons["Edit"].firstMatch.tap()
+        darkBook.tap()
+        dark.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Cuentos breves'")).firstMatch.tap()
+        XCTAssertTrue(dark.staticTexts.matching(NSPredicate(format: "label ENDSWITH ' selected'")).firstMatch.appears(timeout: 5),
+            "no selection bar for several books")
+        pause()
+        shot(dark, "14-dark-selection")
+        dark.buttons["Done"].firstMatch.tap()
+        darkBook.tap()
+        let darkPage = self.page(dark)
+        XCTAssertTrue(darkPage.appears(timeout: 15))
+        XCTAssertTrue(until(20) { darkPage.label.contains(" of ") })
+        let darkDetails = dark.buttons["Show word details"].firstMatch
+        var darkFound = false
+        for step in 0..<16 where !darkFound {
+            darkPage.coordinate(withNormalizedOffset: CGVector(dx: 0.25 + 0.1 * Double(step % 3), dy: 0.08 + 0.04 * Double(step / 3))).tap()
+            darkFound = until(1.5) { darkDetails.exists && darkDetails.isEnabled }
+        }
+        XCTAssertTrue(darkFound)
+        darkDetails.tap()
+        pause()
+        shot(dark, "15-dark-word-details")
+        dark.terminate()
+
         // First launch: onboarding on an empty config dir, finished with a key.
         if let empty = ProcessInfo.processInfo.environment["FLTS_UITEST_EMPTY_DIR"], !empty.isEmpty {
             let first = launch(dir: empty)

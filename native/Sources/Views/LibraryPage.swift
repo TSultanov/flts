@@ -138,6 +138,12 @@ struct LibraryToolbarItems: ToolbarContent {
     @Environment(AppModel.self) private var model
 
     var body: some ToolbarContent {
+        #if os(iOS)
+        // Selecting several books (to move or delete them) needs edit mode on iOS.
+        ToolbarItem(placement: .topBarLeading) {
+            EditButton().disabled(!enabled)
+        }
+        #endif
         AppToolbarItems()
         ToolbarItemGroup(placement: .primaryAction) {
             Button {
