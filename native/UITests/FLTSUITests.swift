@@ -143,6 +143,11 @@ final class FLTSScreenshotTour: XCTestCase {
         shot(window, "4-larger-text")
         app.typeKey("0", modifierFlags: .command)
         XCTAssertTrue(page.appears(timeout: 3), "the reader did not survive a text size change")
+        // ⌘= is ⌘+ without Shift, and has to work too.
+        let sized = page.label
+        app.typeKey("=", modifierFlags: .command)
+        XCTAssertTrue(until(3) { page.label != sized }, "⌘= did not enlarge the text")
+        app.typeKey("0", modifierFlags: .command)
         assertFlips(app, "after changing the text size")
 
         let from = page.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.3))

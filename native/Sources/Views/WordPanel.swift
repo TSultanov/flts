@@ -54,7 +54,8 @@ struct WordPanel: View {
             .gesture(
                 DragGesture()
                     .onChanged { value in
-                        let start = dragStart ?? height
+                        // From the height shown, which is the content's when that is shorter.
+                        let start = dragStart ?? min(height, max(contentHeight, 120))
                         dragStart = start
                         height = min(max(start - value.translation.height, 120), maxHeight)
                     }
