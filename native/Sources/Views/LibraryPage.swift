@@ -6,8 +6,6 @@ struct LibraryPage: View {
     @State private var selection: Set<UUID> = []
     @State private var moving: [BookMeta] = []
     @State private var deleting: [BookMeta] = []
-    @State private var creatingFolder = false
-    @State private var expanded: Set<[String]> = []
     /// The list takes the keyboard on arrival, so arrows and Return work at once.
     @FocusState private var listFocused: Bool
 
@@ -24,13 +22,13 @@ struct LibraryPage: View {
             content
         }
         .modifier(LibraryChrome(
-            moving: $moving, deleting: $deleting, creatingFolder: $creatingFolder, selection: $selection))
+            moving: $moving, deleting: $deleting, selection: $selection))
     }
 
     @ViewBuilder
     private var content: some View {
         @Bindable var model = model
-        if model.library.loaded && model.library.books.isEmpty && model.library.pendingFolders.isEmpty {
+        if model.library.loaded && model.library.books.isEmpty {
                 ContentUnavailableView {
                     Label("Your Library Is Empty", systemImage: "books.vertical")
                 } description: {
@@ -51,7 +49,10 @@ struct LibraryPage: View {
                             .padding(.vertical, 4)
                         }
                     }
-                    FolderContents(folder: model.library.tree, expanded: $expanded)
+                    FolderContents(
+                        folder: model.library.tree,
+                        expanded: Binding(
+                            get: { model.library.expandedFolders }, set: { model.library.expandedFolders = $0 }))
                 }
                 .listStyle(.inset)
                 .contextMenu(forSelectionType: UUID.self) { ids in
@@ -103,18 +104,14 @@ private struct LibraryChrome: ViewModifier {
     @Environment(AppModel.self) private var model
     @Binding var moving: [BookMeta]
     @Binding var deleting: [BookMeta]
-    @Binding var creatingFolder: Bool
     @Binding var selection: Set<UUID>
 
     func body(content: Content) -> some View {
         content
             .navigationTitle("Library")
-                .toolbar { LibraryToolbarItems(newFolder: { creatingFolder = true }) }
+                .toolbar { LibraryToolbarItems() }
                 .sheet(isPresented: Binding(get: { !moving.isEmpty }, set: { if !$0 { moving = [] } })) {
                 MoveBookSheet(books: moving)
-            }
-                .sheet(isPresented: $creatingFolder) {
-                NewFolderSheet()
             }
                 .confirmationDialog(
                 deleting.count == 1 ? "Delete “\(deleting[0].title)”?" : "Delete \(deleting.count) books?",
@@ -138,17 +135,11 @@ private struct LibraryChrome: ViewModifier {
 /// is not rebuilt when it does.
 struct LibraryToolbarItems: ToolbarContent {
     var enabled = true
-    let newFolder: () -> Void
     @Environment(AppModel.self) private var model
 
     var body: some ToolbarContent {
         AppToolbarItems()
         ToolbarItemGroup(placement: .primaryAction) {
-            Button(action: newFolder) {
-                Label("New Folder", systemImage: "folder.badge.plus")
-            }
-            .help("New Folder")
-            .disabled(!enabled)
             Button {
                 model.showImport = true
             } label: {
@@ -304,42 +295,5 @@ struct MoveBookSheet: View {
         let name = newFolder.trimmingCharacters(in: .whitespacesAndNewlines)
         let path = name.isEmpty ? target : target + [name]
         return "/" + path.joined(separator: "/")
-    }
-}
-
-struct NewFolderSheet: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
-    @State private var parent: [String] = []
-    @State private var name = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("New Folder")
-                .font(.headline)
-            Picker("Inside", selection: $parent) {
-                ForEach(model.library.tree.allPaths, id: \.self) { path in
-                    Text(path.isEmpty ? "Library" : path.joined(separator: " › ")).tag(path)
-                }
-            }
-            TextField("Name", text: $name)
-            Text("A folder is kept once a book is moved into it.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Create") {
-                    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-                    model.library.createFolder(parent + [trimmed])
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(20)
-        .frame(width: 380)
     }
 }

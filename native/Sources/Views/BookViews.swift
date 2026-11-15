@@ -110,21 +110,17 @@ struct BookReaderScreen: View {
                     .padding(.bottom, WordPanel.barHeight)
                     WordPanel(session: session, expanded: $wordExpanded)
                 }
-                .overlay(alignment: .top) {
-                    if let error = chapter.error {
-                        ErrorBanner(message: error) { chapter.error = nil }
-                    } else if let failure = model.activity.lastFailure {
-                        ErrorBanner(message: "Translation failed: \(failure)") { model.activity.clearFailure() }
-                    } else if let error = session.book.error {
-                        ErrorBanner(message: error) { session.book.error = nil }
-                    }
-                }
                 .onAppear {
                     // With no word chosen there are no details to show.
                     session.controls.toggleWordPanel = {
                         if wordExpanded || session.word.info != nil { wordExpanded.toggle() }
                     }
                     session.controls.toggleChapters = toggleChapters
+                    session.controls.collapseWordPanel = {
+                        guard wordExpanded else { return false }
+                        wordExpanded = false
+                        return true
+                    }
                 }
                 // The panel folds away with its word.
                 .onChange(of: session.word.selection) { _, ref in
@@ -134,18 +130,35 @@ struct BookReaderScreen: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ContentUnavailableView("Select a Chapter", systemImage: "list.bullet")
+                if session.book.chapters.isEmpty {
+                    ContentUnavailableView("This Book Could Not Be Opened", systemImage: "exclamationmark.triangle")
+                } else {
+                    ContentUnavailableView("Select a Chapter", systemImage: "list.bullet")
+                }
             }
         }
-        .navigationTitle(chapterTitle)
-        .navigationSubtitle(model.library.book(session.book.bookId)?.title ?? "")
+        .overlay(alignment: .top) {
+            if let error = session.chapter?.error {
+                ErrorBanner(message: error) { session.chapter?.error = nil }
+            } else if let failure = model.activity.lastFailure {
+                ErrorBanner(message: "Translation failed: \(failure)") { model.activity.clearFailure() }
+            } else if let error = session.book.error ?? session.word.error {
+                ErrorBanner(message: error) {
+                    session.book.error = nil
+                    session.word.error = nil
+                }
+            }
+        }
+        // The book names the window; the chapter is the subtitle when there is one to name.
+        .navigationTitle(model.library.book(session.book.bookId)?.title ?? "")
+        .navigationSubtitle(chapterTitle)
         .toolbar { toolbar }
         .focusedSceneValue(\.readerControls, session.controls)
         .focusedSceneValue(
             \.bookActions,
             BookActions(
                 translateChapter: translateChapter, toggleWordPanel: { session.controls.toggleWordPanel?() },
-                toggleChapters: toggleChapters))
+                toggleChapters: toggleChapters, hasChapters: session.book.chapters.count > 1))
         .onChange(of: model.config.targetLanguage?.id) { _, id in
             session.word.targetLanguage = id ?? ""
         }
@@ -158,10 +171,10 @@ struct BookReaderScreen: View {
     }
 
     private var chapterTitle: String {
-        guard let id = session.book.currentChapter,
+        guard session.book.chapters.count > 1, let id = session.book.currentChapter,
             let chapter = session.book.chapters.first(where: { $0.id == id })
         else { return "" }
-        return chapter.title.isEmpty ? "<no title>" : chapter.title
+        return chapter.title
     }
 
     private func translateChapter() {

@@ -18,11 +18,6 @@ private func book(_ title: String, _ path: [String]) -> BookMeta {
         #expect(tree.folders[0].folders[0].books.map(\.title) == ["b"])
         #expect(tree.allPaths == [[], ["X"], ["X", "Y"]])
     }
-
-    @Test func emptyFolderIsAdded() {
-        let tree = LibraryFolder.build([]).addingEmpty(["A", "B"])
-        #expect(tree.allPaths == [[], ["A"], ["A", "B"]])
-    }
 }
 
 @MainActor

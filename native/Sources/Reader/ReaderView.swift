@@ -11,6 +11,8 @@ final class ReaderControls {
     /// Single-key toggles as in the web reader (W, C), set by the book page.
     var toggleWordPanel: (() -> Void)?
     var toggleChapters: (() -> Void)?
+    /// True if the word's details were open.
+    var collapseWordPanel: (() -> Bool)?
     /// Idempotent, so two paths closing the list cannot reopen it.
     var hideChapters: (() -> Void)?
     var chaptersShown = false
@@ -53,7 +55,8 @@ struct ReaderView: NSViewRepresentable {
             c.chapterKey = ChapterKey(book: book.bookId, chapter: chapter.chapterId)
             c.revision = chapter.revision
             var anchor: ReadingAnchor?
-            if let state = book.readingState, state.chapterId == chapter.chapterId {
+            let saved = book.readingState.flatMap { $0.chapterId == chapter.chapterId ? $0 : nil }
+            if let state = saved ?? book.positions[chapter.chapterId] {
                 anchor = ReadingAnchor(paragraphId: state.paragraphId, pageOffset: state.pageOffset)
                 // The exact line, if this device saved this very position.
                 if let local = LocalPosition.load(book.bookId), local.state == state {
@@ -148,6 +151,18 @@ struct ReaderView: NSViewRepresentable {
             switch key {
             case "w": parent?.controls.toggleWordPanel?()
             case "c": parent?.controls.toggleChapters?()
+            case "\u{1b}":
+                // Escape backs out one step: the chapter list, the word's details, the word.
+                guard let parent else { return false }
+                if parent.controls.chaptersShown {
+                    parent.controls.hideChapters?()
+                } else if parent.controls.collapseWordPanel?() == true {
+                } else if parent.word.selection != nil {
+                    canvas.selected = nil
+                    parent.word.select(nil, surface: nil)
+                } else {
+                    return false
+                }
             default: return false
             }
             return true

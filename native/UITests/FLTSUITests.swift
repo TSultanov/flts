@@ -330,22 +330,7 @@ final class FLTSScreenshotTour: XCTestCase {
                 .firstMatch.appears(timeout: 10), "onboarding did not lead to the library")
             shot(first.windows.firstMatch, "11-after-onboarding")
 
-            // An empty folder, then a pasted text, both through their sheets.
-            let newFolder = first.buttons["New Folder"].firstMatch
-            XCTAssertTrue(until(5) { newFolder.exists && newFolder.isHittable })
-            // The toolbar is still settling after onboarding hands over.
-            pause(0.4)
-            newFolder.click()
-            let folderSheet = first.sheets.firstMatch
-            XCTAssertTrue(folderSheet.appears(timeout: 5))
-            folderSheet.textFields.firstMatch.click()
-            folderSheet.typeText("Poemas")
-            pause()
-            shot(first.windows.firstMatch, "13-new-folder")
-            folderSheet.buttons["Create"].click()
-            XCTAssertTrue(first.descendants(matching: .any).matching(NSPredicate(format: "label == 'Poemas' OR title == 'Poemas' OR value == 'Poemas'"))
-                .firstMatch.appears(timeout: 5), "new folder not in the library")
-
+            // A pasted text, through the import sheet; switching tabs keeps what was typed.
             first.typeKey("o", modifierFlags: .command)
             let importSheet = first.sheets.firstMatch
             XCTAssertTrue(importSheet.appears(timeout: 5))
@@ -354,6 +339,9 @@ final class FLTSScreenshotTour: XCTestCase {
             importSheet.typeText("Nota breve")
             importSheet.textViews.firstMatch.click()
             importSheet.typeText("Hola. Esto es una nota corta para leer.")
+            importSheet.radioButtons["EPUB"].click()
+            importSheet.radioButtons["Text"].click()
+            XCTAssertEqual(importSheet.textFields.firstMatch.value as? String, "Nota breve", "switching tabs lost the title")
             pause()
             shot(first.windows.firstMatch, "14-import-text")
             importSheet.buttons["Import"].click()

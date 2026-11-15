@@ -60,9 +60,7 @@ struct WordPanel: View {
                     }
                     .onEnded { _ in dragStart = nil }
             )
-            .onHover { inside in
-                if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
-            }
+            .pointerStyle(.rowResize)
             .accessibilityLabel("Resize word details")
     }
 }

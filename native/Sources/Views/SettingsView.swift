@@ -87,7 +87,7 @@ struct TranslationSettings: View {
         if let config = store.config {
             Section {
                 Picker(
-                    "I read in",
+                    "Translate into",
                     selection: Binding(
                         get: { config.targetLanguageId },
                         set: { id in Task { await store.update { $0.targetLanguageId = id } } })
@@ -96,7 +96,7 @@ struct TranslationSettings: View {
                     ForEach(store.languages) { Text($0.label).tag($0.id) }
                 }
             }
-            Section("Provider") {
+            Section {
                 Picker(
                     "Provider",
                     selection: Binding(
@@ -119,6 +119,8 @@ struct TranslationSettings: View {
                     let provider = config.translationProvider
                     Task { await store.update { $0.setApiKey(key, for: provider) } }
                 }
+                // A field per provider: a draft typed for one must not be saved under another.
+                .id(config.translationProvider)
                 if !essentialsOnly { ModelPicker(config: config) }
             }
             if !essentialsOnly {
@@ -255,7 +257,7 @@ struct ReadingSettings: View {
     @AppStorage(Appearance.key, store: AppDefaults.store) private var appearance = Appearance.system
 
     var body: some View {
-        Section("Appearance") {
+        Section {
             Picker("Appearance", selection: $appearance) {
                 ForEach(Appearance.allCases) { Text($0.title).tag($0) }
             }
@@ -393,7 +395,7 @@ struct SpotifySettings: View {
             }
             Section("Lyrics") {
                 Stepper(
-                    "Preload \(config.spotifyPreloadCount) upcoming tracks",
+                    config.spotifyPreloadCount == 1 ? "Preload 1 upcoming track" : "Preload \(config.spotifyPreloadCount) upcoming tracks",
                     value: Binding(
                         get: { config.spotifyPreloadCount },
                         set: { n in Task { await store.update { $0.spotifyPreloadCount = n } } }), in: 0...3)

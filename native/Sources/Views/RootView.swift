@@ -2,6 +2,9 @@ import SwiftUI
 
 struct RootView: View {
     @Environment(AppModel.self) private var model
+    /// Onboarding is for the first run only: once the app has been usable,
+    /// picking a provider without a key in Settings must not replace the window.
+    @State private var wasConfigured = false
 
     var body: some View {
         switch model.phase {
@@ -9,7 +12,7 @@ struct RootView: View {
             ProgressView("Opening library…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .navigationTitle("Library")
-                .toolbar { LibraryToolbarItems(enabled: false, newFolder: {}) }
+                .toolbar { LibraryToolbarItems(enabled: false) }
         case .failed(let message):
             ContentUnavailableView {
                 Label("FLTS could not start", systemImage: "exclamationmark.triangle")
@@ -17,10 +20,13 @@ struct RootView: View {
                 Text(message).textSelection(.enabled)
             }
         case .running:
-            if model.config.loaded && !model.config.isConfigured {
+            if model.config.loaded && !model.config.isConfigured && !wasConfigured {
                 OnboardingView()
             } else {
                 MainView()
+                    .onChange(of: model.config.isConfigured, initial: true) { _, configured in
+                        if configured { wasConfigured = true }
+                    }
             }
         }
     }

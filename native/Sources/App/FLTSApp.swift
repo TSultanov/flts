@@ -7,7 +7,9 @@ struct FLTSApp: App {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
-        WindowGroup("FLTS", id: "main") {
+        // One window, so it is listed in the Window menu and can be reopened
+        // after closing it while Lyrics stays open.
+        Window("FLTS", id: "main") {
             RootView()
                 .environment(delegate.model)
                 .frame(minWidth: 720, minHeight: 480)
@@ -21,6 +23,7 @@ struct FLTSApp: App {
                 .frame(minWidth: 420, minHeight: 360)
         }
         .defaultSize(width: 520, height: 680)
+        .keyboardShortcut("l", modifiers: [.command, .shift])
 
         Settings {
             SettingsView()
@@ -48,19 +51,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let env = ProcessInfo.processInfo.environment
         let parts = (env["FLTS_WINDOW_SIZE"] ?? "").split(separator: "x").compactMap { Double($0) }
         guard parts.count == 2, !(env["FLTS_CONFIG_DIR"] ?? "").isEmpty else { return }
-        var observer: NSObjectProtocol?
-        observer = NotificationCenter.default.addObserver(
-            forName: NSWindow.didBecomeMainNotification, object: nil, queue: .main
-        ) { note in
-            guard let window = note.object as? NSWindow else { return }
-            MainActor.assumeIsolated {
-                let size = CGSize(
-                    width: max(parts[0], window.minSize.width), height: max(parts[1], window.minSize.height))
-                let top = window.screen?.visibleFrame.maxY ?? window.frame.maxY
-                window.setFrame(CGRect(x: 100, y: top - 60 - size.height, width: size.width, height: size.height), display: true)
-            }
-            if let observer { NotificationCenter.default.removeObserver(observer) }
-        }
+        testWindowSize = CGSize(width: parts[0], height: parts[1])
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(pinWindowSize(_:)), name: NSWindow.didBecomeMainNotification, object: nil)
+    }
+
+    private var testWindowSize: CGSize?
+
+    @objc private func pinWindowSize(_ note: Notification) {
+        guard let window = note.object as? NSWindow, let wanted = testWindowSize else { return }
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeMainNotification, object: nil)
+        let size = CGSize(
+            width: max(wanted.width, window.minSize.width), height: max(wanted.height, window.minSize.height))
+        let top = window.screen?.visibleFrame.maxY ?? window.frame.maxY
+        window.setFrame(CGRect(x: 100, y: top - 60 - size.height, width: size.width, height: size.height), display: true)
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -91,6 +95,8 @@ struct AppCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("Import Book…") { model.showImport = true }
                 .keyboardShortcut("o")
+                // Not during onboarding, where nothing can present the sheet.
+                .disabled(!model.config.isConfigured)
         }
         CommandGroup(after: .sidebar) {
             Button("Larger Text") { ReaderPreferences.shared.fontSize += 1 }
@@ -114,7 +120,7 @@ struct AppCommands: Commands {
                 .disabled(book == nil)
             Button("Show Chapters") { book?.toggleChapters() }
                 .keyboardShortcut("c", modifiers: [.command, .control])
-                .disabled(book == nil)
+                .disabled(book?.hasChapters != true)
             Button("Show Word Details") { book?.toggleWordPanel() }
                 .keyboardShortcut("w", modifiers: [.command, .control])
                 .disabled(book == nil)
@@ -122,10 +128,6 @@ struct AppCommands: Commands {
             Button("Library") { model.selectedBookId = nil }
                 .keyboardShortcut("l", modifiers: [.command, .option])
                 .disabled(book == nil)
-        }
-        CommandGroup(after: .windowList) {
-            Button("Lyrics") { openWindow(id: "lyrics") }
-                .keyboardShortcut("l", modifiers: [.command, .shift])
         }
         CommandGroup(after: .help) {
             Button("Reveal Library in Finder") { Platform.revealLibrary(model.config.libraryRoot) }
@@ -137,6 +139,7 @@ struct BookActions {
     let translateChapter: () -> Void
     let toggleWordPanel: () -> Void
     let toggleChapters: () -> Void
+    let hasChapters: Bool
 }
 
 extension FocusedValues {

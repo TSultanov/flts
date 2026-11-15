@@ -119,16 +119,9 @@ final class AnkiStore: CoreBound {
     private let events: EventHub
     private var core: (any CoreService)?
 
-    /// Anki has answered at least once and is not known to be gone. Before the
-    /// first sync attempt the state is idle too, and must not count: the
-    /// toolbar button would show and go again a second after launch.
-    var reachable: Bool {
-        switch status.state {
-        case .unreachable: false
-        case .idle: status.lastFinishedAtMs != nil
-        case .syncing, .ok, .err: true
-        }
-    }
+    /// Anki has answered and is not known to be gone. A first attempt still
+    /// under way does not count: the toolbar button would show and go again.
+    private(set) var reachable = false
 
     init(events: EventHub) {
         self.events = events
@@ -146,6 +139,11 @@ final class AnkiStore: CoreBound {
         guard let core else { return }
         if let status = try? await core.getAnkiSyncStatus() {
             self.status = status
+            switch status.state {
+            case .unreachable: reachable = false
+            case .ok, .err: reachable = true
+            case .idle, .syncing: if status.lastFinishedAtMs != nil { reachable = true }
+            }
         }
     }
 

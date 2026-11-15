@@ -163,7 +163,9 @@ private struct LyricsList: View {
                             LyricsLineView(
                                 line: line,
                                 translation: translation(at: index),
-                                isCurrent: index == current
+                                isCurrent: index == current,
+                                // Plain lyrics have no current line; dimming them all reads as disabled.
+                                dimOthers: lyrics.synced
                             )
                             .id(index)
                         }
@@ -197,6 +199,7 @@ private struct LyricsLineView: View {
     let line: LyricsLine
     let translation: LyricsLineTranslation?
     let isCurrent: Bool
+    let dimOthers: Bool
 
     var body: some View {
         if line.text.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -205,7 +208,7 @@ private struct LyricsLineView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(line.text)
                     .font(.system(.title3, design: .serif).weight(isCurrent ? .semibold : .regular))
-                    .foregroundStyle(isCurrent ? .primary : .secondary)
+                    .foregroundStyle(isCurrent || !dimOthers ? .primary : .secondary)
                 if let translation, !translation.translation.isEmpty {
                     Text(translation.translation)
                         .font(.callout)

@@ -53,9 +53,9 @@ final class LibraryStore: CoreBound {
     private(set) var tree = LibraryFolder(path: [])
     private(set) var loaded = false
     private(set) var importProgress: ImportProgress?
-    /// Folders made in this session that hold no book yet.
-    var pendingFolders: [[String]] = []
     var error: String?
+    /// Open folders, kept here so they survive a visit to a book.
+    var expandedFolders: Set<[String]> = []
 
     private let events: EventHub
     private(set) var core: (any CoreService)?
@@ -100,11 +100,7 @@ final class LibraryStore: CoreBound {
         guard let core else { return }
         do {
             books = try await core.listBooks()
-            var tree = LibraryFolder.build(books)
-            for path in pendingFolders where !tree.allPaths.contains(path) {
-                tree = tree.addingEmpty(path)
-            }
-            self.tree = tree
+            tree = LibraryFolder.build(books)
             loaded = true
         } catch {
             self.error = error.userMessage
@@ -137,14 +133,7 @@ final class LibraryStore: CoreBound {
                 self.error = error.userMessage
             }
         }
-        pendingFolders.removeAll { $0 == path }
         await reload()
-    }
-
-    func createFolder(_ path: [String]) {
-        guard !path.isEmpty, !tree.allPaths.contains(path) else { return }
-        pendingFolders.append(path)
-        tree = tree.addingEmpty(path)
     }
 
     // MARK: Import
@@ -172,19 +161,5 @@ final class LibraryStore: CoreBound {
         let id = try await core.importPlainText(title: title, text: text, sourceLanguageId: sourceLanguageId)
         await reload()
         return id
-    }
-}
-
-extension LibraryFolder {
-    func addingEmpty(_ target: [String]) -> LibraryFolder {
-        guard target.count > path.count, Array(target.prefix(path.count)) == path else { return self }
-        var copy = self
-        let childPath = Array(target.prefix(path.count + 1))
-        if let i = copy.folders.firstIndex(where: { $0.path == childPath }) {
-            copy.folders[i] = copy.folders[i].addingEmpty(target)
-        } else {
-            copy.folders.append(LibraryFolder(path: childPath).addingEmpty(target))
-        }
-        return copy
     }
 }

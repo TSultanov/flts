@@ -122,7 +122,7 @@ on) it lands on the right page of that paragraph.
   chapter, moves a book into a new folder, imports an EPUB and deletes it,
   opens Lyrics and Settings, quits and relaunches in dark mode, drives the
   smallest window from the keyboard, and on an empty config dir finishes
-  onboarding, creates a folder and imports a pasted text. Its screenshots are
+  onboarding and imports a pasted text. Its screenshots are
   attachments in the result bundle. It needs an unlocked session, and waits by
   polling, since XCTest's own waits re-check only once a second. The window
   size comes from `FLTS_WINDOW_SIZE`, which the app applies itself: a frame

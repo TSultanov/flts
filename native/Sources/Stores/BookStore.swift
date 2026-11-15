@@ -9,6 +9,8 @@ final class BookStore {
     private(set) var chapters: [ChapterMeta] = []
     private(set) var summary: BookSummaryStatus?
     private(set) var readingState: BookReadingState?
+    /// Where each chapter was left in this session; the saved state holds only the last one.
+    private(set) var positions: [Int: BookReadingState] = [:]
     private(set) var loaded = false
     var currentChapter: Int?
     var error: String?
@@ -78,6 +80,7 @@ final class BookStore {
         let state = BookReadingState(chapterId: chapterId, paragraphId: paragraphId, pageOffset: pageOffset)
         guard state != readingState else { return }
         readingState = state
+        positions[chapterId] = state
         Task { [core, bookId] in
             try? await core.saveBookReadingState(bookId: bookId, state: state)
         }

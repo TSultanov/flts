@@ -307,6 +307,11 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
             drawPage(text.pages[index], at: CGPoint(x: columnX(column), y: margins.top), in: ctx)
         }
         drawFooter()
+        let rects = visibleControlRects().map(\.1)
+        if rects != controlSignature {
+            controlSignature = rects
+            window?.invalidateCursorRects(for: self)
+        }
     }
 
     private func drawPage(_ page: ReaderPage, at origin: CGPoint, in ctx: CGContext) {
@@ -590,8 +595,35 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         showDefinition(for: text.storage.attributedSubstring(from: range), at: point)
     }
 
+    private func visibleControlRects() -> [(Int, CGRect)] {
+        var out: [(Int, CGRect)] = []
+        for column in 0..<columns {
+            let index = spreadStart + column
+            guard index < text.pages.count else { break }
+            let page = text.pages[index]
+            let origin = CGPoint(x: columnX(column), y: margins.top)
+            out += controlRects(in: page, origin: origin, dy: origin.y - page.top)
+        }
+        return out
+    }
+
+    private var controlSignature: [CGRect] = []
+
+    /// The paragraph buttons are drawn, not views: give them a pointer and a tooltip.
     override func resetCursorRects() {
         super.resetCursorRects()
+        removeAllToolTips()
+        for (_, rect) in visibleControlRects() {
+            addCursorRect(rect, cursor: .pointingHand)
+            addToolTip(rect, owner: self, userData: nil)
+        }
+    }
+
+    @objc func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData: UnsafeMutableRawPointer?) -> String {
+        guard let (pid, _) = visibleControlRects().first(where: { $0.1.contains(point) }) else { return "" }
+        if delegate?.readerTranslationProgress(self, paragraphId: pid) != nil { return "Translating…" }
+        return delegate?.readerCanTranslate(self) ?? true
+            ? "Translate paragraph (⌘-click to translate without the cache)" : "Waiting for chapter summaries…"
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -731,11 +763,18 @@ final class ReaderCanvas: NSView, NSMenuItemValidation {
         }
     }
 
+    private var lastWheelFlip: TimeInterval = 0
+
     override func scrollWheel(with event: NSEvent) {
         guard event.hasPreciseScrollingDeltas else {
+            // One spread per notch burst, not per event.
+            guard event.timestamp - lastWheelFlip > 0.25 else { return }
+            lastWheelFlip = event.timestamp
             if event.scrollingDeltaY < 0 || event.scrollingDeltaX < 0 { nextSpread() } else { previousSpread() }
             return
         }
+        // The glide after a swipe must not turn a second spread.
+        guard event.momentumPhase.isEmpty else { return }
         if event.phase == .began { swipeAccumulator = 0 }
         let delta = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) ? event.scrollingDeltaX : event.scrollingDeltaY
         swipeAccumulator += delta

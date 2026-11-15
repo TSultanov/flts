@@ -21,9 +21,14 @@ struct ImportSheet: View {
             .frame(width: 220)
             .padding()
             Divider()
-            switch kind {
-            case .epub: EpubImport(close: { dismiss() })
-            case .text: TextImport(close: { dismiss() })
+            // Both stay alive, so switching does not discard a parsed book or typed text.
+            ZStack {
+                EpubImport(close: { dismiss() })
+                    .opacity(kind == .epub ? 1 : 0)
+                    .disabled(kind != .epub)
+                TextImport(close: { dismiss() })
+                    .opacity(kind == .text ? 1 : 0)
+                    .disabled(kind != .text)
             }
         }
         .frame(width: 560, height: 520)
@@ -84,6 +89,7 @@ private struct EpubImport: View {
                     Button("Choose Another…") { picking = true }
                 }
                 Spacer()
+                if busy, preview != nil { ProgressView().controlSize(.small) }
                 Button("Cancel", action: close).keyboardShortcut(.cancelAction)
                 Button("Import") { Task { await importBook() } }
                     .keyboardShortcut(.defaultAction)
@@ -245,14 +251,14 @@ struct OnboardingView: View {
                 Text("Welcome to FLTS")
                     .font(.largeTitle.weight(.semibold))
             }
-            Text("Pick the language you read in and a translation provider to get started.")
+            Text("Pick the language you want translations in and a translation provider.")
                 .foregroundStyle(.secondary)
             Form {
                 TranslationSettings(essentialsOnly: true)
             }
             .formStyle(.grouped)
             // About its content's height, so Continue sits right under the fields.
-            .frame(maxWidth: 520, maxHeight: 215)
+            .frame(maxWidth: 520, maxHeight: 165)
             Button("Continue") {
                 // Fields save on Return or losing focus; ending editing commits the last one.
                 NSApp.keyWindow?.makeFirstResponder(nil)
@@ -276,7 +282,7 @@ struct OnboardingView: View {
     /// Why the app cannot start yet; nil once it can (the page then goes away).
     private var missing: String? {
         guard let config = model.config.config else { return nil }
-        if config.targetLanguageId.isEmpty { return "Choose the language you read in." }
+        if config.targetLanguageId.isEmpty { return "Choose the language to translate into." }
         if !config.hasApiKeyForProvider {
             return "Paste an API key for \(model.config.provider(config.translationProvider)?.name ?? "the provider")."
         }

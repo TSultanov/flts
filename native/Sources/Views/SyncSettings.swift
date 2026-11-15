@@ -8,6 +8,7 @@ struct SyncSettings: View {
     @State private var resetting = false
     @State private var deviceName = ""
     @State private var webUI: URL?
+    @State private var removing: DeviceEntry?
 
     var body: some View {
         let sync = model.sync
@@ -110,7 +111,7 @@ struct SyncSettings: View {
                                     .lineLimit(1).truncationMode(.middle)
                             }
                             Spacer()
-                            Button("Remove", role: .destructive) { Task { await sync.remove(deviceId: d.deviceId) } }
+                            Button("Remove", role: .destructive) { removing = d }
                                 .buttonStyle(.borderless)
                         }
                     }
@@ -144,6 +145,18 @@ struct SyncSettings: View {
             }
         }
         .disabled(sync.busy)
+        .confirmationDialog(
+            "Stop syncing with “\(removing.map { $0.name.isEmpty ? "this device" : $0.name } ?? "")”?",
+            isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible
+        ) {
+            Button("Remove Device", role: .destructive) {
+                if let id = removing?.deviceId { Task { await sync.remove(deviceId: id) } }
+                removing = nil
+            }
+            Button("Cancel", role: .cancel) { removing = nil }
+        } message: {
+            Text("It has to be paired again to sync with this Mac.")
+        }
         .confirmationDialog("New sync identity", isPresented: $confirmReset) {
             Button("Give This Device a New Identity", role: .destructive) {
                 resetting = true
