@@ -16,6 +16,17 @@ extension XCUIElement {
     fileprivate func appears(timeout: Double) -> Bool {
         until(timeout) { exists }
     }
+
+    /// A sheet still sliding in is tapped where it was, and missed.
+    fileprivate func tapSettled() {
+        var last = CGRect.null
+        _ = until(3) {
+            let now = frame
+            defer { last = now }
+            return isHittable && now == last
+        }
+        tap()
+    }
 }
 
 /// Drives the iOS app in the Simulator on a seeded library
@@ -169,7 +180,7 @@ final class FLTSiOSTour: XCTestCase {
         delete.tap()
         let confirm = app.buttons["Delete"].firstMatch
         XCTAssertTrue(confirm.appears(timeout: 5), "no delete confirmation")
-        confirm.tap()
+        confirm.tapSettled()
         XCTAssertTrue(until(10) { !book.exists }, "the deleted book is still listed")
         app.terminate()
     }
