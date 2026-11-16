@@ -99,21 +99,39 @@ a pasted text, moves it into a new folder, deletes it, and imports an EPUB
 (`FLTS_UITEST_EPUB` names the file, since no test can drive the system
 picker). `OnboardingTest` covers the first run against the fake core.
 
+## Verified on an emulator
+
+On a Pixel 7 image (Android 15, arm64), with the `.dev` build unless noted:
+
+- the core starts in the app's data directory and opens a seeded library;
+  the on-device tour passes (`make test-android-native-ui`);
+- an OpenAI-compatible provider is reached over TLS (an invalid key comes
+  back as 401, shown in the reader), which is the path through the Rust
+  verifier;
+- the reader draws justified, hyphenated pages, a tapped word shows its
+  translation and the word bar, and a swipe turns the page;
+- sync comes online with its device ID and pairing code;
+- the release build (R8) starts the core;
+- the release build installs over the Tauri build, opens the same
+  directories with the existing library files in place, and Android then
+  refuses the Tauri build as a downgrade.
+
+Two things the first run on Android turned up, both fixed in the core:
+`std::fs::File::lock` and `try_lock` are not implemented for Android, so the
+library lease and the store's file locks failed and no library opened (under
+the Tauri shell as well); `dbsync::file_lock` calls `flock` there. And the
+core's runtime threads are now attached to the JVM for life: a thread the
+bindings attach for one callback is detached when that callback returns, even
+when it is nested in another on the same thread, which aborted the process
+when a coroutine resumed inline on a core thread.
+
 ## Not verified yet
 
-Nothing here has run on Android itself: the work was done without a device or
-an emulator, so the checks above ran on the JVM against the core built for
-the Mac. Before installing over the Tauri app, the `.dev` build needs to
-show on a device that
+These need a real device:
 
-- the core starts and finds its directories, and a release build does too
-  (R8 keeps what JNA and JNI reach, by the rules in `proguard-rules.pro`);
-- an OpenAI-compatible provider translates (the path through the Rust TLS
-  verifier; Gemini does not use it), and sync comes online;
-- the reader meets the gate in `docs/native-macos.md`, and taps hit words
-  split by a hyphen;
-- the on-device tour passes, the camera scanner reads a code shown by
-  another device, and an EPUB picked through the system picker imports.
-
-Then, on the real app: installing over the Tauri build keeps the library,
-settings and sync identity, and the rollback build opens them again.
+- the camera scanner reading a code shown by another device, and two devices
+  pairing and syncing;
+- an EPUB picked through the system picker;
+- the reader's timings against the gate in `docs/native-macos.md`;
+- the upgrade over the Tauri app on real data, signed with the real key, and
+  a device with 16 KB pages.

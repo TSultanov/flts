@@ -94,7 +94,8 @@ fun ImportSheet(model: AppModel, onDismiss: () -> Unit) {
         }
     }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        DialogSystemBars()
         Scaffold(
             modifier = Modifier.fillMaxSize(),
             topBar = {

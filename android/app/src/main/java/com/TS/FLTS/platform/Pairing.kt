@@ -1,5 +1,6 @@
 package com.TS.FLTS.platform
 
+import com.TS.FLTS.ui.DialogSystemBars
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
@@ -99,7 +100,8 @@ fun PairingScanner(found: (String) -> Unit, onDismiss: () -> Unit) {
             request.launch(Manifest.permission.CAMERA)
         }
     }
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        DialogSystemBars()
         Scaffold(
             modifier = Modifier.fillMaxSize().testTag("scanner"),
             topBar = {

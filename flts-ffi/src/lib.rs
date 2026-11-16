@@ -644,6 +644,15 @@ mod android {
     use jni::errors::ThrowRuntimeExAndDefault;
     use jni::objects::{JClass, JObject};
 
+    /// Core threads stay attached to the JVM for life. A thread the bindings
+    /// attach for one callback is detached when that callback returns, even
+    /// when it is nested in another on the same thread, and the VM aborts.
+    fn attach_runtime_thread() {
+        if let Ok(vm) = jni::JavaVM::singleton() {
+            let _ = vm.attach_current_thread(|_| Ok::<_, jni::errors::Error>(()));
+        }
+    }
+
     /// `com.TS.FLTS.core.Native.init(Context)`: must run before the core
     /// starts, since TLS verification and URL opening call into the JVM.
     #[unsafe(no_mangle)]
@@ -664,6 +673,7 @@ mod android {
                     );
                 }
                 std::mem::forget(global);
+                app_core::host::async_runtime::on_thread_start(attach_runtime_thread);
                 rustls_platform_verifier::android::init_with_env(env, context)
             })
             .resolve::<ThrowRuntimeExAndDefault>()

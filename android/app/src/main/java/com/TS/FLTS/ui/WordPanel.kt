@@ -134,6 +134,11 @@ private fun WordLine(
         val chapter = session.chapter
         when {
             info != null -> {
+                // The word and its gloss take the room; the actions stay at the trailing edge.
+                Row(
+                    Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
                 Text(
                     info.original, fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold, maxLines = 1,
                     style = if (bar) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge)
@@ -152,7 +157,7 @@ private fun WordLine(
                         info.note, color = secondary, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f, fill = false))
                 }
-                Spacer(Modifier.weight(0.01f))
+                }
                 (word.cardState as? WordStore.CardState.Failed)?.let {
                     // Inline, as in the web app, not only in a tooltip.
                     Text(
@@ -183,7 +188,6 @@ private fun WordLine(
                 "Select a word to show its translation", color = secondary, maxLines = 1,
                 overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         }
-        if (info != null) Spacer(Modifier.weight(1f))
         IconButton(onClick = { setExpanded(!expanded) }, enabled = expanded || info != null) {
             Icon(
                 if (expanded) Icons.Outlined.KeyboardArrowDown else Icons.Outlined.KeyboardArrowUp,

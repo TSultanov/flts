@@ -17,8 +17,11 @@ cd "$ANDROID"
 # The app can only read its own storage: stage the copy, then take it in as the app.
 adb shell rm -rf "$STAGE"
 adb push "$FIXTURE" "$STAGE" >/dev/null
-adb shell run-as "$PKG" sh -c "rm -rf files/uitest && cp -R $STAGE files/uitest"
-CONFIG_DIR="$(adb shell run-as "$PKG" sh -c 'cd files/uitest && pwd' | tr -d '\r')"
+# Readable by the app whoever adb runs as.
+adb shell chmod -R a+rX "$STAGE"
+# One string: adb re-splits separate arguments on the device.
+adb shell "run-as $PKG sh -c 'rm -rf files/uitest && cp -R $STAGE files/uitest'"
+CONFIG_DIR="$(adb shell "run-as $PKG sh -c 'cd files/uitest && pwd'" | tr -d '\r')"
 
 adb shell am instrument -w -e FLTS_CONFIG_DIR "$CONFIG_DIR" \
   "$PKG.test/androidx.test.runner.AndroidJUnitRunner" | tee /dev/stderr | grep -q "^OK ("

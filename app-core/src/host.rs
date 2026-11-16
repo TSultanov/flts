@@ -95,6 +95,13 @@ pub mod async_runtime {
     pub use tokio::task::JoinHandle;
 
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    static THREAD_START: OnceLock<fn()> = OnceLock::new();
+
+    /// Runs on every runtime thread as it starts; set before the runtime's
+    /// first use. Android attaches the thread to the JVM here.
+    pub fn on_thread_start(hook: fn()) {
+        let _ = THREAD_START.set(hook);
+    }
 
     pub struct RuntimeHandle(&'static tokio::runtime::Runtime);
 
@@ -109,6 +116,11 @@ pub mod async_runtime {
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .thread_name("flts-core")
+                .on_thread_start(|| {
+                    if let Some(hook) = THREAD_START.get() {
+                        hook()
+                    }
+                })
                 .build()
                 .expect("failed to build the tokio runtime")
         }))

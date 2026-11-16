@@ -136,7 +136,8 @@ fun SettingsSheet(model: AppModel, onDismiss: () -> Unit) {
     LaunchedEffect(Unit) { model.settingsPage = null }
     val back = { if (page != null) page = null else onDismiss() }
     // The dialog is its own window: Back arrives here, not at the activity.
-    Dialog(onDismissRequest = back, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = back, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        DialogSystemBars()
         val shown = page
         Scaffold(
             modifier = Modifier.fillMaxSize().testTag("settings"),

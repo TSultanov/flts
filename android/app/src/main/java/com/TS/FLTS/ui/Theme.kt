@@ -12,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import com.TS.FLTS.core.AppPrefs
 
@@ -76,4 +77,19 @@ fun FltsTheme(content: @Composable () -> Unit) {
         else -> lightColorScheme()
     }
     MaterialTheme(colorScheme = colors, content = content)
+}
+
+/// A dialog is its own window: without this its status bar icons stay light
+/// on a light page.
+@Composable
+fun DialogSystemBars() {
+    val view = androidx.compose.ui.platform.LocalView.current
+    val light = MaterialTheme.colorScheme.surface.luminance() > 0.5f
+    androidx.compose.runtime.SideEffect {
+        val window = (view.parent as? androidx.compose.ui.window.DialogWindowProvider)?.window ?: return@SideEffect
+        androidx.core.view.WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightStatusBars = light
+            isAppearanceLightNavigationBars = light
+        }
+    }
 }
