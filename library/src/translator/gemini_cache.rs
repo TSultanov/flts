@@ -321,7 +321,7 @@ async fn serve_prompt_cache(
                     let result = result.map(|(handle, entry)| {
                         if let Some(entry) = entry { disk.insert(disk_key(&key), entry); }
                         ready.insert(key, handle.clone()); handle
-                    }).map_err(|err| err.to_string());
+                    }).map_err(|err| format!("{err:#}"));
                     if let Some(replies) = waiters.remove(&id) { for reply in replies { let _ = reply.send(result.clone()); } }
                 }
             }

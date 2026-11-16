@@ -403,9 +403,10 @@ async fn scheduler(
                         }
                     }
                     activities.remove(&(id, job.paragraph));
+                    if let Err(error) = &result { log::warn!("translation of paragraph {} failed: {error:#}", job.paragraph); }
                     let _ = app.emit("paragraph_updated", ParagraphUpdatedEvent {book_id: id, paragraph_id: job.paragraph});
                     if !books.contains(&id) { books.push(id); }
-                    finished.push(ParagraphTranslationFinishedEvent {book_id: id, paragraph_id: job.paragraph, request_id: job.request_id, error: result.err().map(|e| e.to_string())});
+                    finished.push(ParagraphTranslationFinishedEvent {book_id: id, paragraph_id: job.paragraph, request_id: job.request_id, error: result.err().map(|e| format!("{e:#}"))});
                 }
                 for id in &books { let _ = app.emit("book_updated", id); }
                 if !books.is_empty() { library_tx.send_modify(|_| {}); }
