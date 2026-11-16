@@ -2,7 +2,8 @@
 
 A SwiftUI app (`native/`) over the same Rust core as the Tauri app. It opens the
 same library, config, cache and sync identity (bundle id `com.TS.FLTS`; all paths
-are resolved in Rust). The Tauri app remains the shell on iOS and Android.
+are resolved in Rust). iOS and Android have their own native apps over the same
+core: `docs/native-ios.md`, `docs/native-android.md`.
 
 ## Layout
 

@@ -1906,11 +1906,15 @@ dependencies = [
 name = "flts-ffi"
 version = "0.1.0"
 dependencies = [
+ "android_logger",
  "app-core",
  "isolang",
+ "jni 0.22.4",
  "library",
  "log",
+ "ndk-context",
  "oslog",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

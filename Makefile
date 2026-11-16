@@ -8,6 +8,7 @@
 #   make install-macos    # build + copy to /Applications
 #   make install-ios      # build Release + install on connected iPhone/iPad
 #   make install-android  # build + adb install on connected device
+#   make install-android-native  # the native Compose app instead (see docs/native-android.md)
 #
 # Spaced aliases (quoted on the shell): make "install macos" | "install ios" | "install android"
 #
@@ -31,6 +32,7 @@ IOS_IPA := $(TAURI_DIR)/gen/apple/build/arm64/$(PRODUCT).ipa
 	build-macos build-ios build-android \
 	install-macos install-ios install-android \
 	build-ios-native install-ios-native \
+	build-android-native install-android-native test-android-native test-android-native-ui \
 	build-macos-native install-macos-native test-macos-native test-macos-native-ui test-macos-native-ui-quick test-macos-native-ui-translate test-ios-native-ui test-ios-native-ui-services \
 	install\ macos install\ ios install\ android \
 	help
@@ -127,6 +129,22 @@ install-ios: build-ios ## install on a connected iPhone/iPad
 	xcrun devicectl device install app --device "$$DEVICE" "$$APP"
 
 NATIVE_IOS_APP := $(NATIVE)/build/DerivedData-iOS-device/Build/Products/Release-iphoneos/$(PRODUCT).app
+
+ANDROID_NATIVE := $(ROOT)android
+ANDROID_NATIVE_APK := $(ANDROID_NATIVE)/app/build/outputs/apk/release/app-release.apk
+
+build-android-native: ## build the native Compose Android app (release APK, core in release-ship, signed like build-android)
+	cd "$(ANDROID_NATIVE)" && ./gradlew --console=plain :app:assembleRelease
+	@echo ">> $(ANDROID_NATIVE_APK)"
+
+install-android-native: build-android-native ## install the native app on a connected device (replaces the Tauri app, keeps its data)
+	adb install -r "$(ANDROID_NATIVE_APK)"
+
+test-android-native: ## run the native Android app's unit tests (JVM, no device)
+	cd "$(ANDROID_NATIVE)" && FLTS_SKIP_CORE=1 ./gradlew --console=plain :app:testDebugUnitTest
+
+test-android-native-ui: ## run the Android UI tour on a connected device or emulator, on a seeded library
+	"$(ANDROID_NATIVE)/scripts/ui-tests.sh"
 
 build-ios-native: ## build the native SwiftUI iOS app for devices (Release, signed with the project's team)
 	cd "$(NATIVE)" && xcodegen generate && xcodebuild -project FLTS.xcodeproj -scheme FLTS-iOS \

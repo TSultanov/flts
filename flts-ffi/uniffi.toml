@@ -8,3 +8,22 @@ lower = "{}.uuidString.lowercased()"
 type_name = "Int"
 lift = "Int({})"
 lower = "Int64({})"
+
+[bindings.kotlin]
+package_name = "uniffi.flts_ffi"
+cdylib_name = "flts_ffi"
+
+[bindings.kotlin.custom_types.Uuid]
+type_name = "UUID"
+imports = ["java.util.UUID"]
+lift = "UUID.fromString({})"
+lower = "{}.toString()"
+
+[bindings.kotlin.custom_types.Number]
+type_name = "Int"
+lift = "{}.toInt()"
+lower = "{}.toLong()"
+
+# A field named `message` collides with `Exception.message` in Kotlin.
+[bindings.kotlin.rename]
+"CoreError.Failed.message" = "detail"

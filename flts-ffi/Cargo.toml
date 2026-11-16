@@ -12,6 +12,11 @@ name = "uniffi-bindgen-swift"
 path = "src/bin/uniffi-bindgen-swift.rs"
 required-features = ["bindgen"]
 
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
 [features]
 bindgen = ["uniffi/cli"]
 
@@ -31,3 +36,9 @@ thiserror = "2"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 oslog = "0.2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.15"
+jni = "0.22"
+ndk-context = "0.1"
+rustls-platform-verifier = "0.7"

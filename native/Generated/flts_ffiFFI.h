@@ -312,6 +312,11 @@ void uniffi_flts_ffi_fn_free_fltscore(uint64_t handle, RustCallStatus *_Nonnull 
 uint64_t uniffi_flts_ffi_fn_constructor_fltscore_start(uint64_t shell, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_FN_CONSTRUCTOR_FLTSCORE_START_WITH_DIRS
+#define UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_FN_CONSTRUCTOR_FLTSCORE_START_WITH_DIRS
+uint64_t uniffi_flts_ffi_fn_constructor_fltscore_start_with_dirs(uint64_t shell, RustBuffer config_dir, RustBuffer cache_dir, RustBuffer data_dir, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_FN_METHOD_FLTSCORE_CREATE_CARD_FOR_WORD
 #define UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_FN_METHOD_FLTSCORE_CREATE_CARD_FOR_WORD
 uint64_t uniffi_flts_ffi_fn_method_fltscore_create_card_for_word(uint64_t ptr, RustBuffer book_id, int64_t paragraph_id, int64_t sentence_id, int64_t word_id
@@ -1251,6 +1256,12 @@ uint16_t uniffi_flts_ffi_checksum_method_shell_run_on_main(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_CHECKSUM_CONSTRUCTOR_FLTSCORE_START
 #define UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_CHECKSUM_CONSTRUCTOR_FLTSCORE_START
 uint16_t uniffi_flts_ffi_checksum_constructor_fltscore_start(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_CHECKSUM_CONSTRUCTOR_FLTSCORE_START_WITH_DIRS
+#define UNIFFI_FFIDEF_UNIFFI_FLTS_FFI_CHECKSUM_CONSTRUCTOR_FLTSCORE_START_WITH_DIRS
+uint16_t uniffi_flts_ffi_checksum_constructor_fltscore_start_with_dirs(void
     
 );
 #endif

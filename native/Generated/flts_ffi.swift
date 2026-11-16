@@ -930,6 +930,21 @@ public static func start(shell: Shell)throws  -> FltsCore  {
 })
 }
     
+    /**
+     * For platforms without HOME (Android): the app's own directories.
+     */
+public static func startWithDirs(shell: Shell, configDir: String, cacheDir: String, dataDir: String)throws  -> FltsCore  {
+    return try  FfiConverterTypeFltsCore_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_flts_ffi_fn_constructor_fltscore_start_with_dirs(
+        FfiConverterTypeShell_lower(shell),
+        FfiConverterString.lower(configDir),
+        FfiConverterString.lower(cacheDir),
+        FfiConverterString.lower(dataDir),uniffiCallStatus
+    )
+})
+}
+    
 
     
 open func createCardForWord(bookId: Uuid, paragraphId: Number, sentenceId: Number, wordId: Number)async throws  -> CardResult  {
@@ -6932,6 +6947,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flts_ffi_checksum_constructor_fltscore_start() != 13014) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flts_ffi_checksum_constructor_fltscore_start_with_dirs() != 45733) {
         return InitializationResult.apiChecksumMismatch
     }
 

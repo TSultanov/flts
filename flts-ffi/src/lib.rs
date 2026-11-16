@@ -52,19 +52,27 @@ impl MainTask {
     }
 }
 
-struct ShellHost(Arc<dyn Shell>);
+struct ShellHost {
+    shell: Arc<dyn Shell>,
+    dirs: Option<app_core::PlatformDirs>,
+}
 
 impl Host for ShellHost {
     fn emit(&self, event: &str, payload: serde_json::Value) {
         match CoreEvent::from_wire(event, payload) {
-            Ok(event) => self.0.on_event(event),
+            Ok(event) => self.shell.on_event(event),
             Err(err) => log::warn!("event {event} not delivered: {err}"),
         }
     }
 
     fn run_on_main_thread(&self, f: Box<dyn FnOnce() + Send>) -> Result<(), String> {
-        self.0.run_on_main(Arc::new(MainTask(Mutex::new(Some(f)))));
+        self.shell
+            .run_on_main(Arc::new(MainTask(Mutex::new(Some(f)))));
         Ok(())
+    }
+
+    fn platform_dirs(&self) -> Option<app_core::PlatformDirs> {
+        self.dirs.clone()
     }
 }
 
@@ -122,6 +130,18 @@ pub struct FltsCore {
 }
 
 impl FltsCore {
+    fn start_on(host: ShellHost) -> Result<Arc<Self>, CoreError> {
+        let fd_limit = app_core::raise_open_file_limit();
+        init_logging();
+        log::info!("{fd_limit}");
+        let core = app_core::start(AppHandle::new(host))
+            .map_err(|err| CoreError::new(format!("{err:#}")))?;
+        Ok(Arc::new(Self {
+            state: core.state,
+            owner: Mutex::new(Some(core.owner)),
+        }))
+    }
+
     /// Runs a core command on the core runtime, whatever executor polls us.
     async fn run<T, F, Fut>(&self, f: F) -> Result<T, CoreError>
     where
@@ -153,15 +173,26 @@ impl FltsCore {
     /// and friends included), so both shells open the same library.
     #[uniffi::constructor]
     pub fn start(shell: Arc<dyn Shell>) -> Result<Arc<Self>, CoreError> {
-        let fd_limit = app_core::raise_open_file_limit();
-        init_logging();
-        log::info!("{fd_limit}");
-        let core = app_core::start(AppHandle::new(ShellHost(shell)))
-            .map_err(|err| CoreError::new(format!("{err:#}")))?;
-        Ok(Arc::new(Self {
-            state: core.state,
-            owner: Mutex::new(Some(core.owner)),
-        }))
+        Self::start_on(ShellHost { shell, dirs: None })
+    }
+
+    /// For platforms without HOME (Android): the app's own directories.
+    #[uniffi::constructor]
+    pub fn start_with_dirs(
+        shell: Arc<dyn Shell>,
+        config_dir: String,
+        cache_dir: String,
+        data_dir: String,
+    ) -> Result<Arc<Self>, CoreError> {
+        let dirs = app_core::PlatformDirs {
+            config: PathBuf::from(config_dir),
+            cache: PathBuf::from(cache_dir),
+            data: PathBuf::from(data_dir),
+        };
+        Self::start_on(ShellHost {
+            shell,
+            dirs: Some(dirs),
+        })
     }
 
     /// Flushes and stops the backend; call once before the process exits.
@@ -598,6 +629,44 @@ fn init_logging() {
         let _ = oslog::OsLogger::new("com.TS.FLTS")
             .level_filter(log::LevelFilter::Info)
             .init();
+    }
+    #[cfg(target_os = "android")]
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(log::LevelFilter::Info)
+            .with_tag("flts"),
+    );
+}
+
+#[cfg(target_os = "android")]
+mod android {
+    use jni::EnvUnowned;
+    use jni::errors::ThrowRuntimeExAndDefault;
+    use jni::objects::{JClass, JObject};
+
+    /// `com.TS.FLTS.core.Native.init(Context)`: must run before the core
+    /// starts, since TLS verification and URL opening call into the JVM.
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_TS_FLTS_core_Native_init<'caller>(
+        mut unowned_env: EnvUnowned<'caller>,
+        _class: JClass<'caller>,
+        context: JObject<'caller>,
+    ) {
+        unowned_env
+            .with_env(|env| -> Result<(), jni::errors::Error> {
+                // Never released: ndk-context keeps the raw pointers.
+                let global = env.new_global_ref(&context)?;
+                let vm = env.get_java_vm()?;
+                unsafe {
+                    ndk_context::initialize_android_context(
+                        vm.get_raw().cast(),
+                        global.as_raw().cast(),
+                    );
+                }
+                std::mem::forget(global);
+                rustls_platform_verifier::android::init_with_env(env, context)
+            })
+            .resolve::<ThrowRuntimeExAndDefault>()
     }
 }
 

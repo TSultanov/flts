@@ -84,7 +84,8 @@ fn build_archive(go_dir: &Path, lib: &Path, target_os: &str) {
 
     // Bare SONAME so the DT_NEEDED is resolved from the app's lib dir, not OUT_DIR.
     if android {
-        cmd.arg("-ldflags=-extldflags=-Wl,-soname,libsyncthing_core.so");
+        // 16 KB pages: such devices refuse a library aligned to 4 KB.
+        cmd.arg("-ldflags=-extldflags=-Wl,-soname,libsyncthing_core.so,-z,max-page-size=16384");
     }
     cmd.arg(".");
 
@@ -308,17 +309,23 @@ fn stage_android_jnilib(crate_dir: &Path, lib: &Path) {
         other => panic!("unsupported Android arch: {other}"),
     };
 
-    let workspace = crate_dir.parent().expect("syncthing-sys has a parent dir");
-    let gen_android = workspace.join("site/src-tauri/gen/android");
-    if !gen_android.exists() {
-        println!(
-            "cargo:warning=syncthing-sys: {} absent; skipping jniLibs staging",
-            gen_android.display()
-        );
-        return;
-    }
-
-    let jnilibs = gen_android.join("app/src/main/jniLibs").join(abi);
+    // The native Android app's build points this at its own jniLibs.
+    println!("cargo:rerun-if-env-changed=FLTS_ANDROID_JNILIBS_DIR");
+    let jnilibs = match env::var_os("FLTS_ANDROID_JNILIBS_DIR").filter(|v| !v.is_empty()) {
+        Some(dir) => PathBuf::from(dir).join(abi),
+        None => {
+            let workspace = crate_dir.parent().expect("syncthing-sys has a parent dir");
+            let gen_android = workspace.join("site/src-tauri/gen/android");
+            if !gen_android.exists() {
+                println!(
+                    "cargo:warning=syncthing-sys: {} absent; skipping jniLibs staging",
+                    gen_android.display()
+                );
+                return;
+            }
+            gen_android.join("app/src/main/jniLibs").join(abi)
+        }
+    };
     std::fs::create_dir_all(&jnilibs)
         .unwrap_or_else(|e| panic!("creating {}: {e}", jnilibs.display()));
     let dest = jnilibs.join("libsyncthing_core.so");
