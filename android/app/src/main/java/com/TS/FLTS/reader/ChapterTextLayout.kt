@@ -186,6 +186,47 @@ class ChapterTextLayout(val typography: ReaderTypography = ReaderTypography(), v
         return null
     }
 
+    private fun isJustified(block: StaticLayout, line: Int): Boolean {
+        val end = block.getLineEnd(line)
+        return typography.justify && end < block.text.length && block.text[end - 1] != '\n'
+    }
+
+    /// The line ends in the middle of a word, so it is drawn with a hyphen.
+    private fun breaksInsideWord(block: StaticLayout, line: Int): Boolean {
+        val end = block.getLineEnd(line)
+        return end > 0 && end < block.text.length && block.text[end - 1].isLetter() && block.text[end].isLetter()
+    }
+
+    /// What each space of a justified line is stretched (or shrunk) by when drawn.
+    private fun spaceStretch(block: StaticLayout, line: Int): Float {
+        if (!isJustified(block, line)) return 0f
+        val start = block.getLineStart(line)
+        val end = block.getLineVisibleEnd(line)
+        val spaces = (start until end).count { block.text[it] == ' ' }
+        if (spaces == 0) return 0f
+        var natural = Layout.getDesiredWidth(block.text, start, end, block.paint)
+        if (breaksInsideWord(block, line)) {
+            natural += block.paint.measureText("-")
+        }
+        return (columnWidth - natural) / spaces
+    }
+
+    /// Where a character of a line is drawn. `Layout.getPrimaryHorizontal`
+    /// (and its inverse) leave justification out, so on a justified line
+    /// they drift from the glyphs by up to a word. Left-to-right text only.
+    private fun x(block: StaticLayout, line: Int, offset: Int, stretch: Float): Float {
+        val start = block.getLineStart(line)
+        val end = block.getLineVisibleEnd(line)
+        val at = offset.coerceIn(start, end)
+        var x = if (at > start) Layout.getDesiredWidth(block.text, start, at, block.paint) else 0f
+        if (stretch != 0f) x += stretch * (start until at).count { block.text[it] == ' ' }
+        // A word broken at the line's end is drawn with its hyphen.
+        if (offset >= end && at == end && breaksInsideWord(block, line)) {
+            x += block.paint.measureText("-")
+        }
+        return x
+    }
+
     /// Frames of a paragraph's character range in layout coordinates, one per line piece.
     fun frames(paragraphId: Int, start: Int, end: Int): List<RectF> {
         val index = order.indexOf(paragraphId)
@@ -197,13 +238,11 @@ class ChapterTextLayout(val typography: ReaderTypography = ReaderTypography(), v
         if (to == from) return emptyList()
         val out = ArrayList<RectF>(2)
         for (line in block.getLineForOffset(from)..block.getLineForOffset(to - 1)) {
-            val lineStart = block.getLineStart(line)
-            val lineEnd = block.getLineEnd(line)
-            val a = block.getPrimaryHorizontal(max(from, lineStart))
-            // The end of the line belongs to the next one for `getPrimaryHorizontal`.
-            val b = if (to < lineEnd) block.getPrimaryHorizontal(to) else block.getLineRight(line)
-            if (b == a) continue
-            out.add(RectF(min(a, b), top + block.getLineTop(line), max(a, b), top + block.getLineBottom(line)))
+            val stretch = spaceStretch(block, line)
+            val a = x(block, line, max(from, block.getLineStart(line)), stretch)
+            val b = x(block, line, min(to, block.getLineEnd(line)), stretch)
+            if (b <= a) continue
+            out.add(RectF(a, top + block.getLineTop(line), b, top + block.getLineBottom(line)))
         }
         return out
     }
@@ -224,17 +263,17 @@ class ChapterTextLayout(val typography: ReaderTypography = ReaderTypography(), v
         val pid = order[index]
         val p = paragraphs[pid] ?: return null
         val line = block.getLineForVertical((y - tops[index]).toInt())
-        // The nearest caret position: the word is on one side of it or the other.
-        val caret = block.getOffsetForHorizontal(line, x)
+        val lineStart = block.getLineStart(line)
+        val lineEnd = block.getLineEnd(line)
+        val lineTop = tops[index] + block.getLineTop(line)
         val slopX = 2 * typography.density
         val slopY = 4 * typography.density
-        for (candidate in intArrayOf(caret, caret - 1)) {
-            if (candidate < 0 || candidate >= p.text.length) continue
-            val w = p.words.indexOfFirst { candidate >= it.start && candidate < it.start + it.len }
-            if (w < 0) continue
-            val word = p.words[w]
+        // By the words' drawn frames: the layout's own offset lookup ignores justification.
+        for ((w, word) in p.words.withIndex()) {
+            if (word.start >= lineEnd || word.start + word.len <= lineStart) continue
             val inside = frames(pid, word.start, word.start + word.len).any {
-                x >= it.left - slopX && x <= it.right + slopX && y >= it.top - slopY && y <= it.bottom + slopY
+                it.top == lineTop && x >= it.left - slopX && x <= it.right + slopX &&
+                    y >= it.top - slopY && y <= it.bottom + slopY
             }
             if (inside) return Hit(pid, w)
         }

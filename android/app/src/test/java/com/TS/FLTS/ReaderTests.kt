@@ -83,6 +83,30 @@ class ChapterLayoutTests {
         assertEquals(2, layout.hit(5f, layout.lines.last().top + 5)?.paragraphId)
     }
 
+    /// On a justified line the words' frames follow the stretched spaces:
+    /// the last word ends at the column's edge, and no two words overlap.
+    @Test
+    fun framesFollowJustification() {
+        val layout = ChapterTextLayout()
+        val text = List(60) { listOf("uno", "dos", "tres", "cuatro", "cinco")[it % 5] }.joinToString(" ")
+        val p = paragraph(0, text)
+        layout.setContent(listOf(0), mapOf(0 to p))
+        layout.layout(400f, 2000f)
+        val lines = layout.lines
+        assertTrue(lines.size > 3)
+        for ((n, line) in lines.dropLast(1).withIndex()) {
+            val next = lines[n + 1].start
+            val onLine = p.words.indices.filter { p.words[it].start >= line.start && p.words[it].start < next }
+            val frames = onLine.map { layout.wordFrames(0, it).single() }
+            assertEquals("line $n starts at the column's edge", 0f, frames.first().left, 0.5f)
+            assertEquals("line $n ends at the column's edge", 400f, frames.last().right, 1.5f)
+            for (i in 1 until frames.size) assertTrue(frames[i].left > frames[i - 1].right)
+            for ((i, w) in onLine.withIndex()) {
+                assertEquals(w, layout.hit(frames[i].centerX(), frames[i].centerY())?.wordIndex)
+            }
+        }
+    }
+
     /// A line separator inside a paragraph breaks the line and keeps offsets.
     @Test
     fun lineSeparatorsBreakLines() {

@@ -130,9 +130,10 @@ class ReaderView(context: Context) : View(context) {
     private var marginBottom = dp(44f)
     private var marginRight = dp(56f)
     private val columnGap = dp(64f)
-    private val controlSize = dp(22f)
+    private var controlSize = dp(22f)
+    private var controlGap = dp(10f)
 
-    /// A finger needs about 44 dp; the button is drawn 22 dp wide.
+    /// A finger needs about 44 dp; the button is drawn half that wide.
     private val controlSlop = dp(11f)
 
     private val main = Handler(Looper.getMainLooper())
@@ -228,14 +229,16 @@ class ReaderView(context: Context) : View(context) {
     }
 
     private fun sizeChanged() {
-        // A phone has no room for wide margins; the left one still holds the
-        // paragraph buttons. A phone in landscape is wide but short: it keeps
-        // the tight margins.
+        // A phone has no room for wide margins. A phone in landscape is wide
+        // but short: it keeps the tight margins.
         val tight = width < dp(600f) || height < dp(500f)
         marginTop = dp(if (tight) 20f else 40f)
-        marginLeft = dp(if (tight) 40f else 56f)
+        marginLeft = dp(if (tight) 26f else 56f)
         marginBottom = dp(if (tight) 34f else 44f)
-        marginRight = dp(if (tight) 18f else 56f)
+        marginRight = dp(if (tight) 26f else 56f)
+        // Equal margins on a phone; the paragraph button shrinks to fit the left one.
+        controlSize = dp(if (tight) 18f else 22f)
+        controlGap = dp(if (tight) 5f else 10f)
         if (width != laidOutWidth || height != laidOutHeight) {
             relayout(if (laidOutWidth == 0) pendingAnchor else (sticky ?: currentAnchor()))
         }
@@ -463,7 +466,7 @@ class ReaderView(context: Context) : View(context) {
             if (!translating && text.paragraphs[pid]?.translated != false) continue
             // Centred on the first line's lowercase letters.
             val y = line.baseline - text.typography.fontSize * 0.25f - controlSize / 2 + dy
-            val left = x - controlSize - dp(10f)
+            val left = x - controlSize - controlGap
             out.add(pid to RectF(left, y, left + controlSize, y + controlSize))
         }
         return out
