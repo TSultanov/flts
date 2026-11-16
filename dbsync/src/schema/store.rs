@@ -1,5 +1,6 @@
 //! The container that owns a directory: every writer's shards, and the cache built from them.
 
+use crate::file_lock::FileLock;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -76,7 +77,7 @@ impl Layout {
             .truncate(false)
             .write(true)
             .open(self.local.join("lock"))?;
-        file.lock()?;
+        file.lock_exclusive()?;
         Ok(Lease(file))
     }
 }
@@ -91,7 +92,7 @@ struct Lease(File);
 
 impl Drop for Lease {
     fn drop(&mut self) {
-        let _ = self.0.unlock();
+        let _ = self.0.release_lock();
     }
 }
 

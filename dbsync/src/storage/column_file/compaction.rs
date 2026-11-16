@@ -1,3 +1,4 @@
+use crate::file_lock::FileLock;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
@@ -197,7 +198,7 @@ impl ColumnFile {
     ) -> Result<(Self, CompactionReport)> {
         let path = self.file_source().path();
         let original = OpenOptions::new().read(true).write(true).open(path)?;
-        original.lock()?;
+        original.lock_exclusive()?;
         let found = Self::read_commit_token(path)?;
         if found != self.commit_token() {
             return Err(Error::Conflict {
@@ -231,7 +232,7 @@ impl ColumnFile {
         }
         validate(&ready)?;
         let replacement = OpenOptions::new().read(true).write(true).open(&temp.0)?;
-        replacement.lock()?;
+        replacement.lock_exclusive()?;
         replacement.sync_all()?;
         let after_bytes = replacement.metadata()?.len();
         compaction_fault("before_replace")?;
@@ -245,7 +246,7 @@ impl ColumnFile {
             #[cfg(unix)]
             File::open(parent)?.sync_all()?;
             compaction_fault("before_unlock")?;
-            replacement.unlock()?;
+            replacement.release_lock()?;
             Ok(())
         })();
         if let Err(source) = sync {

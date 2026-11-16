@@ -1,5 +1,6 @@
 //! Appends changed chunks to an existing file and publishes them as a generation.
 
+use crate::file_lock::FileLock;
 use std::fs::{File, OpenOptions};
 use std::sync::Arc;
 
@@ -120,14 +121,14 @@ impl std::fmt::Debug for CommitAttempt {
 
 impl CommitAttempt {
     pub fn inspect(&self) -> Result<ColumnFile> {
-        self.source.file().lock()?;
+        self.source.file().lock_exclusive()?;
         let result: Result<ColumnFile> = (|| {
             self.source.file().sync_data()?;
             let file = ColumnFile::from_source(self.source.clone())?;
             file.verify()?;
             Ok(file)
         })();
-        let unlocked = self.source.file().unlock();
+        let unlocked = self.source.file().release_lock();
         let file = result?;
         unlocked?;
         Ok(file)
@@ -142,7 +143,7 @@ impl ColumnFileUpdater {
             .read(true)
             .write(true)
             .open(file_source.path())?;
-        file.lock()?;
+        file.lock_exclusive()?;
         let found = ColumnFile::read_commit_token(file_source.path())?;
         if found != reader.commit_token() {
             return Err(conflict(reader.commit_token(), found));
@@ -457,7 +458,7 @@ impl ColumnFileUpdater {
             }
         })();
         if let Err(source) = publication {
-            let _ = self.file.unlock();
+            let _ = self.file.release_lock();
             return Err(Error::CommitUncertain {
                 attempt: Box::new(attempt),
                 source,
@@ -466,7 +467,7 @@ impl ColumnFileUpdater {
 
         let mark = AppendMark::new(self.file_uuid, dir_offset + dir_len, generation);
         let _ = self.file.write_mark(&mark.to_bytes());
-        let _ = self.file.unlock();
+        let _ = self.file.release_lock();
         Ok(ColumnFile::published(source, self.columns, slot))
     }
 }

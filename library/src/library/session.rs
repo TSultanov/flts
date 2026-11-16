@@ -1,3 +1,4 @@
+use dbsync::file_lock::FileLock;
 use std::{
     fs::{File, OpenOptions},
     path::{Path, PathBuf},
@@ -18,7 +19,7 @@ impl Drop for LibraryLease {
         if names_same_file(&self._file, &self.path) {
             let _ = std::fs::remove_file(&self.path);
         }
-        let _ = self._file.unlock();
+        let _ = self._file.release_lock();
     }
 }
 
@@ -75,12 +76,8 @@ impl LibraryLease {
                 }
                 Err(err) => return Err(err.into()),
             };
-            match file.try_lock() {
-                Ok(()) => {}
-                Err(std::fs::TryLockError::WouldBlock) => {
-                    anyhow::bail!("library already open: {}", root.display())
-                }
-                Err(std::fs::TryLockError::Error(err)) => return Err(err.into()),
+            if !file.try_lock_exclusive()? {
+                anyhow::bail!("library already open: {}", root.display())
             }
             // A previous holder may have unlinked the file after we opened it.
             if names_same_file(&file, &path) {
