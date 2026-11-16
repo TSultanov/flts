@@ -92,6 +92,9 @@ final class ReaderCanvas: PlatformView {
 
     var margins = PlatformEdgeInsets(top: 40, left: 56, bottom: 44, right: 56)
     var columnGap: CGFloat = 64
+    /// The paragraph button in the left margin, and its distance from the text.
+    var controlSize: CGFloat = 22
+    var controlGap: CGFloat = 10
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -415,7 +418,7 @@ final class ReaderCanvas: PlatformView {
             } else {
                 let enabled = delegate?.readerCanTranslate(self) ?? true
                 let tint = enabled ? PlatformColor.readerSecondary : PlatformColor.readerTertiary.withAlphaComponent(0.35)
-                guard let symbol = PlatformImage.readerSymbol("character.bubble", pointSize: 13, tint: tint) else { continue }
+                guard let symbol = PlatformImage.readerSymbol("character.bubble", pointSize: (controlSize * 0.6).rounded(), tint: tint) else { continue }
                 symbol.draw(in: rect.insetBy(dx: (rect.width - symbol.size.width) / 2, dy: (rect.height - symbol.size.height) / 2))
             }
         }
@@ -437,7 +440,7 @@ final class ReaderCanvas: PlatformView {
     /// Gutter buttons for untranslated or translating paragraphs that start on this page.
     func controlRects(in page: ReaderPage, origin: CGPoint, dy: CGFloat) -> [(Int, CGRect)] {
         var out: [(Int, CGRect)] = []
-        let size: CGFloat = 22
+        let size = controlSize
         for line in text.lines where line.top >= page.top && line.top < page.bottom {
             guard line.paragraphIndex < text.order.count else { continue }
             let pid = text.order[line.paragraphIndex]
@@ -446,7 +449,7 @@ final class ReaderCanvas: PlatformView {
             guard translating || !(text.paragraphs[pid]?.translated ?? true) else { continue }
             // Centred on the first line's lowercase letters.
             let y = line.bottom - text.typography.fontSize * 0.55 - size / 2 + dy
-            out.append((pid, CGRect(x: origin.x - size - 10, y: y, width: size, height: size)))
+            out.append((pid, CGRect(x: origin.x - size - controlGap, y: y, width: size, height: size)))
         }
         return out
     }

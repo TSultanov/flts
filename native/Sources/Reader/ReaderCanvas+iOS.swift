@@ -40,7 +40,7 @@ extension ReaderCanvas: @preconcurrency UIEditMenuInteractionDelegate {
 
     var isResizingLive: Bool { false }
     var flipLayer: CALayer? { layer }
-    /// A finger needs about 44 pt; the button is drawn 22 pt wide.
+    /// A finger needs about 44 pt; the button is drawn half that wide.
     var controlSlop: CGFloat { 11 }
 
     /// The reader takes the keys, for a hardware keyboard's arrows, Space, W
@@ -61,12 +61,15 @@ extension ReaderCanvas: @preconcurrency UIEditMenuInteractionDelegate {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        // A phone has no room for desktop margins; the left one still holds the
-        // paragraph buttons.
+        // A phone has no room for desktop margins. They are equal on both
+        // sides; the paragraph button shrinks to fit the left one.
         // A phone in landscape is wide but short: it keeps the tight margins.
+        let tight = bounds.width < 600 || bounds.height < 500
         margins =
-            bounds.width < 600 || bounds.height < 500
-            ? UIEdgeInsets(top: 20, left: 40, bottom: 34, right: 18) : UIEdgeInsets(top: 40, left: 56, bottom: 44, right: 56)
+            tight
+            ? UIEdgeInsets(top: 20, left: 26, bottom: 34, right: 26) : UIEdgeInsets(top: 40, left: 56, bottom: 44, right: 56)
+        controlSize = tight ? 18 : 22
+        controlGap = tight ? 5 : 10
         sizeChanged()
     }
 
@@ -88,7 +91,7 @@ extension ReaderCanvas: @preconcurrency UIEditMenuInteractionDelegate {
         }
         // In the margins (not over text), a tap turns the page, as in other readers.
         if point.x > bounds.width - margins.right { return nextSpread() }
-        if point.x < margins.left - 2 * controlSlop - 22 { return previousSpread() }
+        if point.x < margins.left - 2 * controlSlop - controlSize { return previousSpread() }
         selectWord(at: point)
     }
 
