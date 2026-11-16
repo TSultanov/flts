@@ -105,12 +105,28 @@ struct CommitField: View {
     var prompt: String?
     let commit: (String) -> Void
     @State private var draft = ""
+    /// A secret shown in the clear, to check what was typed or pasted.
+    @State private var revealed = false
     @FocusState private var focused: Bool
 
     var body: some View {
         labelled {
             if secure {
-                SecureField(title, text: $draft, prompt: prompt.map(Text.init))
+                HStack(spacing: 6) {
+                    if revealed {
+                        TextField(title, text: $draft, prompt: prompt.map(Text.init))
+                    } else {
+                        SecureField(title, text: $draft, prompt: prompt.map(Text.init))
+                    }
+                    Button {
+                        revealed.toggle()
+                    } label: {
+                        Image(systemName: revealed ? "eye.slash" : "eye")
+                    }
+                    .buttonStyle(.borderless)
+                    .help(revealed ? "Hide" : "Show")
+                    .accessibilityLabel(revealed ? "Hide \(title)" : "Show \(title)")
+                }
             } else {
                 TextField(title, text: $draft, prompt: prompt.map(Text.init))
             }

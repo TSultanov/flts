@@ -27,6 +27,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
@@ -307,6 +309,8 @@ private fun CommitField(
 ) {
     var draft by remember { mutableStateOf(value) }
     var focused by remember { mutableStateOf(false) }
+    // A secret shown in the clear, to check what was typed or pasted.
+    var revealed by remember { mutableStateOf(false) }
     val current by rememberUpdatedState(value)
     val onCommit by rememberUpdatedState(commit)
     val save = { if (draft != current) onCommit(draft) }
@@ -320,7 +324,16 @@ private fun CommitField(
         label = { Text(title) },
         placeholder = prompt?.let { { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) } },
         singleLine = true,
-        visualTransformation = if (secure) PasswordVisualTransformation() else VisualTransformation.None,
+        visualTransformation = if (secure && !revealed) PasswordVisualTransformation() else VisualTransformation.None,
+        trailingIcon = if (secure) {
+            {
+                IconButton(onClick = { revealed = !revealed }) {
+                    Icon(
+                        if (revealed) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                        contentDescription = if (revealed) "Hide $title" else "Show $title")
+                }
+            }
+        } else null,
         keyboardOptions = settingsLiteralKeyboard(
             when {
                 secure -> KeyboardType.Password
