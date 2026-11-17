@@ -163,6 +163,26 @@ impl LibraryCardStore {
         .await
     }
 
+    /// Removes the cards named as `(source, target, slug)` under one commit;
+    /// the number that were there.
+    pub async fn remove_batch(
+        &self,
+        cards: Vec<(String, String, String)>,
+    ) -> anyhow::Result<usize> {
+        if cards.is_empty() {
+            return Ok(0);
+        }
+        self.transaction(move |db| {
+            let mut removed = 0;
+            for (source, target, slug) in &cards {
+                removed += usize::from(db.remove_card(source, target, slug)?);
+            }
+            db.publish()?;
+            Ok(removed)
+        })
+        .await
+    }
+
     /// Language pairs that have cards, as `(source, target)`.
     pub async fn list_pairs(&self) -> anyhow::Result<Vec<(String, String)>> {
         let pairs = self.inner.store.read(|db| db.card_pairs()).await?;
@@ -301,6 +321,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_removed_card_is_gone_and_can_be_made_again() {
+        let dir = TempDir::new("flts_cards");
+        let root = dir.path.join("library");
+        let old = card("poder", "мочь", vec![example(0)]);
+        let new = card("poder", "мочь", vec![example(1)]);
+        {
+            let store = LibraryCardStore::new(LibraryStore::open(&root).unwrap());
+            store.create_if_absent(&old, "spa", "rus").await.unwrap();
+            create(&store, card("saber", "знать", vec![example(0)])).await;
+            let named = |slug: &str| ("spa".to_owned(), "rus".to_owned(), slug.to_owned());
+            assert_eq!(
+                store
+                    .remove_batch(vec![named("poder"), named("nada")])
+                    .await
+                    .unwrap(),
+                1
+            );
+            assert_eq!(store.load("spa", "rus", "poder").await.unwrap(), None);
+            assert_eq!(
+                store.list_cards_in_pair("spa", "rus").await.unwrap(),
+                ["saber"]
+            );
+
+            assert!(store.create_if_absent(&new, "spa", "rus").await.unwrap());
+        }
+        let store = LibraryCardStore::new(LibraryStore::open(&root).unwrap());
+        assert_eq!(
+            store.load("spa", "rus", "poder").await.unwrap(),
+            Some(new),
+            "the old example stays out"
+        );
+    }
+
+    #[tokio::test]
     async fn a_create_whose_commit_failed_lands_on_retry() {
         let dir = TempDir::new("flts_cards");
         let root = dir.path.join("library");
@@ -382,6 +436,48 @@ mod tests {
             cards_a.list_cards_in_pair("spa", "rus").await.unwrap(),
             ["poder"]
         );
+    }
+
+    #[tokio::test]
+    async fn a_card_written_on_one_device_is_removed_by_another() {
+        let dir = TempDir::new("flts_cards");
+        let a = LibraryStore::open(&dir.path.join("a/library")).unwrap();
+        let b = LibraryStore::open(&dir.path.join("b/library")).unwrap();
+        let (cards_a, cards_b) = (
+            LibraryCardStore::new(a.clone()),
+            LibraryCardStore::new(b.clone()),
+        );
+        let sync = || {
+            crate::test_utils::copy_shards(a.shared_dir(), b.shared_dir());
+            crate::test_utils::copy_shards(b.shared_dir(), a.shared_dir());
+            for store in [&a, &b] {
+                store.run_blocking(|db| db.refresh().map(drop)).unwrap();
+            }
+        };
+        create(&cards_a, card("poder", "мочь", vec![example(0)])).await;
+        create(&cards_a, card("saber", "знать", vec![example(0)])).await;
+        sync();
+
+        let poder = vec![("spa".to_owned(), "rus".to_owned(), "poder".to_owned())];
+        assert_eq!(cards_b.remove_batch(poder).await.unwrap(), 1);
+        sync();
+        for cards in [&cards_a, &cards_b] {
+            assert_eq!(cards.load("spa", "rus", "poder").await.unwrap(), None);
+            assert_eq!(
+                cards.list_cards_in_pair("spa", "rus").await.unwrap(),
+                ["saber"]
+            );
+        }
+
+        let again = card("poder", "уметь", vec![example(1)]);
+        create(&cards_a, again.clone()).await;
+        sync();
+        for cards in [&cards_a, &cards_b] {
+            assert_eq!(
+                cards.load("spa", "rus", "poder").await.unwrap(),
+                Some(again.clone())
+            );
+        }
     }
 
     #[tokio::test]

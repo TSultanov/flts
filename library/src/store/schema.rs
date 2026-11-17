@@ -177,6 +177,35 @@ pub fn derived<T>(parent: dbsync::Uuid, name: &str) -> Id<T> {
 pub const ROOT: dbsync::Uuid = dbsync::Uuid::from_u128(0x666c_7473_6c69_6272_6172_7900_0000_0001);
 
 impl LibraryDb {
+    /// Brings a removed row back as it last stood, so it can be written
+    /// over; `false` when it is not removed.
+    pub fn revive<E>(&mut self, id: Id<E>) -> dbsync::Result<bool>
+    where
+        Self: dbsync::schema::Holds<E>,
+        E: dbsync::schema::Entity,
+    {
+        use dbsync::schema::{Holds, Table};
+        let table = Holds::<E>::table(self);
+        let removed = match table.winner(id)? {
+            Some(row) => table.versions().raw_at(row)?.is_removed(),
+            None => false,
+        };
+        if !removed {
+            return Ok(false);
+        }
+        let mut last = None;
+        for row in table.versions_of(id)? {
+            let version = table.versions().raw_at(row)?;
+            if !version.is_removed() {
+                last = Some(version.dot());
+            }
+        }
+        let dot =
+            last.ok_or_else(|| dbsync::Error::invalid("a removed row with nothing to restore"))?;
+        self.restore(id, dot)?;
+        Ok(true)
+    }
+
     /// Whole-row writes: one revision, where per-field setters would append one each.
     pub fn put_reading_position(
         &mut self,
@@ -261,6 +290,7 @@ impl LibraryDb {
                 fsrs_stability,
             )
         } else {
+            self.revive(id)?;
             self.cards.rewrite(
                 id,
                 pair,

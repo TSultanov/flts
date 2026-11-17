@@ -62,6 +62,13 @@ enum Commands {
     },
     /// List books
     List {},
+    /// List card ids, one per line
+    ListCards {},
+    /// Remove the cards whose ids a file lists, one per line
+    DeleteCards {
+        /// File of card ids, as `list-cards` prints them
+        ids: PathBuf,
+    },
     /// Dump chapter summaries for a book
     Summaries {
         /// Book ID
@@ -206,6 +213,37 @@ async fn dump_summaries(
         println!();
     }
 
+    Ok(())
+}
+
+async fn list_cards(library: &Library) -> anyhow::Result<()> {
+    let cards = library.card_store();
+    for (source, target) in cards.list_pairs().await? {
+        for slug in cards.list_cards_in_pair(&source, &target).await? {
+            println!("{}", library::card::card_id(&source, &target, &slug));
+        }
+    }
+    Ok(())
+}
+
+async fn delete_cards(library: &Library, ids: &Path) -> anyhow::Result<()> {
+    let mut named = Vec::new();
+    for id in std::fs::read_to_string(ids)?.lines().map(str::trim) {
+        if id.is_empty() {
+            continue;
+        }
+        // `flts_<src>_<tgt>_<slug>`; only the slug may hold an underscore.
+        let mut parts = id.splitn(4, '_');
+        match (parts.next(), parts.next(), parts.next(), parts.next()) {
+            (Some("flts"), Some(source), Some(target), Some(slug)) => {
+                named.push((source.to_owned(), target.to_owned(), slug.to_owned()));
+            }
+            _ => anyhow::bail!("not a card id: {id}"),
+        }
+    }
+    let asked = named.len();
+    let removed = library.card_store().remove_batch(named).await?;
+    println!("removed {removed} of {asked} cards");
     Ok(())
 }
 
@@ -464,6 +502,12 @@ async fn do_main() -> anyhow::Result<()> {
             }
             Commands::List {} => {
                 list_books(&library).await?;
+            }
+            Commands::ListCards {} => {
+                list_cards(&library).await?;
+            }
+            Commands::DeleteCards { ids } => {
+                delete_cards(&library, ids).await?;
             }
             Commands::Summaries {
                 id,

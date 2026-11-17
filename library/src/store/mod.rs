@@ -1490,6 +1490,8 @@ impl Inner {
                         translation,
                     )?;
                     position += 1;
+                } else if self.db.revive(row)? {
+                    (self.unpublished, changed) = (true, true);
                 }
             }
         }
@@ -1516,9 +1518,35 @@ impl Inner {
                     u32_of(example.chapter)?,
                     u32_of(example.paragraph)?,
                 )?;
+            } else if self.db.revive(row)? {
+                (self.unpublished, changed) = (true, true);
             }
         }
         Ok(changed)
+    }
+
+    /// Takes the card and its rows out; `false` when there is no such card.
+    /// Removed, not purged: the id is derived from the lemma, and a purged
+    /// id could never hold that word's card again.
+    pub fn remove_card(&mut self, source: &str, target: &str, slug: &str) -> anyhow::Result<bool> {
+        let Some(id) = self.card_row(source, target, slug)? else {
+            return Ok(false);
+        };
+        self.unpublished = true;
+        for row in self
+            .db
+            .children_of::<schema::Card, schema::CardTranslation>(id)?
+        {
+            self.db.remove(row)?;
+        }
+        for row in self
+            .db
+            .children_of::<schema::Card, schema::CardExample>(id)?
+        {
+            self.db.remove(row)?;
+        }
+        self.db.remove(id)?;
+        Ok(true)
     }
 
     pub fn card_pairs(&self) -> anyhow::Result<Vec<String>> {
