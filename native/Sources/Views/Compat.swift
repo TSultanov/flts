@@ -2,23 +2,34 @@ import SwiftUI
 
 /// Modifiers that exist on one platform only, under one name for both.
 extension View {
-    /// The chapter under the book's title: a window subtitle on the Mac, a
-    /// two-line title on iOS.
+    /// The book's title with the chapter under it, cut where a panel over the
+    /// leading `coveredWidth` points runs under the bar. The system title
+    /// cannot be cut, so the Mac draws its own and keeps the window's name.
+    /// `barWidth` is the window's width, which the Mac title has to fit in.
     @ViewBuilder
-    func bookTitle(_ title: String, chapter: String) -> some View {
+    func bookTitle(_ title: String, chapter: String, coveredWidth: CGFloat = 0, barWidth: CGFloat = 0) -> some View {
         #if os(macOS)
-        navigationTitle(title).navigationSubtitle(chapter)
+        navigationTitle(title)
+            .toolbar(removing: .title)
+            .toolbar {
+                // The toolbar sizes items by their whole text, so the room
+                // left by the window controls and buttons caps it here.
+                let item = ToolbarItem(placement: .navigation) {
+                    BarTitle(title: title, chapter: chapter, coveredWidth: coveredWidth)
+                        .frame(maxWidth: max(80, barWidth - 360), alignment: .leading)
+                }
+                if #available(macOS 26, *) {
+                    item.sharedBackgroundVisibility(.hidden)
+                } else {
+                    item
+                }
+            }
         #else
         navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    VStack(spacing: 0) {
-                        Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                        if !chapter.isEmpty {
-                            Text(chapter).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                    }
+                    BarTitle(title: title, chapter: chapter, coveredWidth: coveredWidth)
                 }
             }
         #endif
@@ -96,4 +107,45 @@ extension View {
         listStyle(.plain)
         #endif
     }
+}
+
+/// The bar sits above the content, so a panel sliding under it cannot hide it.
+private struct BarTitle: View {
+    let title: String
+    let chapter: String
+    let coveredWidth: CGFloat
+    @State private var minX: CGFloat = .infinity
+    #if os(macOS)
+    @Environment(\.controlActiveState) private var activeState
+    #endif
+
+    var body: some View {
+        VStack(alignment: alignment, spacing: 0) {
+            Text(title).font(titleFont).lineLimit(1)
+            if !chapter.isEmpty {
+                Text(chapter).font(chapterFont).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        #if os(macOS)
+        // As the system title: dimmed in a window that is not key.
+        .foregroundStyle(activeState == .inactive ? .secondary : .primary)
+        .padding(.horizontal, 6)
+        #endif
+        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minX } action: { minX = $0 }
+        .mask {
+            Rectangle()
+                .padding(.leading, max(0, coveredWidth - minX))
+                .animation(.easeOut(duration: 0.18), value: coveredWidth)
+        }
+    }
+
+    #if os(macOS)
+    private var alignment: HorizontalAlignment { .leading }
+    private var titleFont: Font { .headline }
+    private var chapterFont: Font { .subheadline }
+    #else
+    private var alignment: HorizontalAlignment { .center }
+    private var titleFont: Font { .subheadline.weight(.semibold) }
+    private var chapterFont: Font { .caption }
+    #endif
 }

@@ -104,6 +104,7 @@ struct BookReaderScreen: View {
     @Binding var wordExpanded: Bool
     let toggleChapters: () -> Void
     @Environment(AppModel.self) private var model
+    @State private var width: CGFloat = 0
     private let prefs = ReaderPreferences.shared
 
     var body: some View {
@@ -159,8 +160,11 @@ struct BookReaderScreen: View {
                 }
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         // The book names the window; the chapter is the subtitle when there is one to name.
-        .bookTitle(model.library.book(session.book.bookId)?.title ?? "", chapter: chapterTitle)
+        .bookTitle(
+            model.library.book(session.book.bookId)?.title ?? "", chapter: chapterTitle,
+            coveredWidth: session.controls.chaptersShown ? ChaptersPanel.width : 0, barWidth: width)
         .toolbar { toolbar }
         #if os(iOS)
         .onAppear { model.activeReader = session.controls }
@@ -205,6 +209,12 @@ struct BookReaderScreen: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        #if os(macOS)
+        // Without the system title nothing pushes the actions to the trailing side.
+        if #available(macOS 26, *) {
+            ToolbarSpacer(.flexible)
+        }
+        #endif
         ToolbarItemGroup(placement: .primaryAction) {
             if let chapter = session.chapter, chapter.loaded, chapter.untranslatedCount > 0 {
                 let ready = session.book.canTranslate(chapter.chapterId)

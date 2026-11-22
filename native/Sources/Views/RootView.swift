@@ -180,7 +180,8 @@ struct BookPage: View {
 }
 
 /// The chapter list over the reader's left edge; a click beside it closes it.
-private struct ChaptersPanel: View {
+struct ChaptersPanel: View {
+    static let width: CGFloat = 280
     let session: BookSession
     let close: () -> Void
 
@@ -189,7 +190,7 @@ private struct ChaptersPanel: View {
             ChaptersList(session: session)
                 .listStyle(.sidebar)
                 .scrollContentBackground(.hidden)
-                .frame(width: 280)
+                .frame(width: Self.width)
                 .background(.regularMaterial)
                 .overlay(alignment: .trailing) { Divider() }
                 .shadow(color: .black.opacity(0.12), radius: 12, x: 4)
