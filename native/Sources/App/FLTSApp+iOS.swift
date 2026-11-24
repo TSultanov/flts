@@ -56,6 +56,9 @@ private struct ReaderCommands: Commands {
             Button("Larger Text") { prefs.fontSize += 1 }.keyboardShortcut("+")
             Button("Smaller Text") { prefs.fontSize -= 1 }.keyboardShortcut("-")
             Button("Default Text Size") { prefs.fontSize = ReaderPreferences.defaultFontSize }.keyboardShortcut("0")
+            Button("Wider Margins") { prefs.marginScale += ReaderPreferences.marginStep }
+            Button("Narrower Margins") { prefs.marginScale -= ReaderPreferences.marginStep }
+            Button("Default Margins") { prefs.marginScale = 1 }
             Divider()
             Button("Import Book…") { model.showImport = true }
                 .keyboardShortcut("o")

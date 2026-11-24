@@ -38,9 +38,26 @@ final class ReaderPreferences {
         }
     }
 
+    static let marginScales: ClosedRange<CGFloat> = 0.5...3
+    static let marginStep: CGFloat = 0.25
+
+    /// Side margins, as a multiple of the default for the screen.
+    var marginScale: CGFloat {
+        didSet {
+            let clamped = min(max(marginScale, Self.marginScales.lowerBound), Self.marginScales.upperBound)
+            guard clamped == marginScale else {
+                marginScale = clamped
+                return
+            }
+            AppDefaults.store.set(Double(marginScale), forKey: "readerMarginScale")
+        }
+    }
+
     private init() {
         let saved = AppDefaults.store.double(forKey: "readerFontSize")
         fontSize = saved > 0 ? CGFloat(saved) : Self.defaultFontSize
+        let scale = AppDefaults.store.double(forKey: "readerMarginScale")
+        marginScale = scale > 0 ? CGFloat(scale) : 1
     }
 
     func typography(language: String? = nil) -> ReaderTypography {

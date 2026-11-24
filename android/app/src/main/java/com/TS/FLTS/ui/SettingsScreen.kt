@@ -587,6 +587,22 @@ private fun ReadingSettings() {
             "The quick brown fox jumps over the lazy dog.", fontFamily = FontFamily.Serif,
             fontSize = ReaderPreferences.fontSize.sp, lineHeight = (ReaderPreferences.fontSize * 1.35f).sp)
     }
+    SettingsSection("Page") {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Narrow")
+            Slider(
+                value = ReaderPreferences.marginScale,
+                onValueChange = {
+                    ReaderPreferences.marginScale =
+                        (it / ReaderPreferences.MARGIN_STEP).roundToInt() * ReaderPreferences.MARGIN_STEP
+                },
+                valueRange = ReaderPreferences.MARGIN_SCALES,
+                steps = 9,
+                modifier = Modifier.weight(1f).semantics { contentDescription = "Margins" }.testTag("settings.margins"),
+            )
+            Text("Wide")
+        }
+    }
 }
 
 @Composable

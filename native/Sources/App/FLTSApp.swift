@@ -110,6 +110,10 @@ struct AppCommands: Commands {
             Button("Actual Size") { ReaderPreferences.shared.fontSize = ReaderPreferences.defaultFontSize }
                 .keyboardShortcut("0")
             Divider()
+            Button("Wider Margins") { ReaderPreferences.shared.marginScale += ReaderPreferences.marginStep }
+            Button("Narrower Margins") { ReaderPreferences.shared.marginScale -= ReaderPreferences.marginStep }
+            Button("Default Margins") { ReaderPreferences.shared.marginScale = 1 }
+            Divider()
         }
         CommandMenu("Book") {
             Button("Next Page") { reader?.next() }

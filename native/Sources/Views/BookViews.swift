@@ -114,6 +114,7 @@ struct BookReaderScreen: View {
                     ReaderView(
                         book: session.book, chapter: chapter, word: session.word, activity: model.activity,
                         controls: session.controls, typography: prefs.typography(language: chapter.language),
+                        marginScale: prefs.marginScale,
                         model: model.config.config?.model ?? "",
                         revision: chapter.revision, activityEntries: model.activity.entries
                     )
@@ -275,6 +276,19 @@ private struct ReadingMenu: View {
                 }
             }
             Button("Default Size") { prefs.fontSize = ReaderPreferences.defaultFontSize }
+            ControlGroup {
+                Button {
+                    prefs.marginScale -= ReaderPreferences.marginStep
+                } label: {
+                    Label("Narrower Margins", systemImage: "arrow.left.and.right")
+                }
+                Button {
+                    prefs.marginScale += ReaderPreferences.marginStep
+                } label: {
+                    Label("Wider Margins", systemImage: "arrow.right.and.line.vertical.and.arrow.left")
+                }
+            }
+            Button("Default Margins") { prefs.marginScale = 1 }
             Picker("Appearance", selection: $appearance) {
                 ForEach(Appearance.allCases) { Text($0.title).tag($0) }
             }

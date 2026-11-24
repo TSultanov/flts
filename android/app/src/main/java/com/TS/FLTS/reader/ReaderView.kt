@@ -133,6 +133,15 @@ class ReaderView(context: Context) : View(context) {
     private var controlSize = dp(22f)
     private var controlGap = dp(10f)
 
+    /// Side margins, as a multiple of the default for the view's size.
+    var marginScale = 1f
+        set(value) {
+            if (value == field) return
+            field = value
+            updateMargins()
+            relayout(sticky ?: currentAnchor())
+        }
+
     /// A finger needs about 44 dp; the button is drawn half that wide.
     private val controlSlop = dp(11f)
 
@@ -229,19 +238,25 @@ class ReaderView(context: Context) : View(context) {
     }
 
     private fun sizeChanged() {
-        // A phone has no room for wide margins. A phone in landscape is wide
-        // but short: it keeps the tight margins.
-        val tight = width < dp(600f) || height < dp(500f)
-        marginTop = dp(if (tight) 20f else 40f)
-        marginLeft = dp(if (tight) 26f else 56f)
-        marginBottom = dp(if (tight) 34f else 44f)
-        marginRight = dp(if (tight) 26f else 56f)
-        // Equal margins on a phone; the paragraph button shrinks to fit the left one.
-        controlSize = dp(if (tight) 18f else 22f)
-        controlGap = dp(if (tight) 5f else 10f)
+        updateMargins()
         if (width != laidOutWidth || height != laidOutHeight) {
             relayout(if (laidOutWidth == 0) pendingAnchor else (sticky ?: currentAnchor()))
         }
+    }
+
+    private fun updateMargins() {
+        // A phone has no room for wide margins. A phone in landscape is wide
+        // but short: it keeps the tight margins.
+        val tight = width < dp(600f) || height < dp(500f)
+        val side = ((if (tight) 13f else 56f) * marginScale).roundToInt().toFloat()
+        marginTop = dp(if (tight) 20f else 40f)
+        marginLeft = dp(side)
+        marginBottom = dp(if (tight) 34f else 44f)
+        marginRight = dp(side)
+        // The paragraph button shrinks to fit the left margin.
+        val size = min(if (tight) 18f else 22f, max(side - 2f, 6f))
+        controlSize = dp(size)
+        controlGap = dp(min(if (tight) 5f else 10f, max(side - size - 3f, 1f)))
     }
 
     fun relayout(anchor: ReadingAnchor?) {
@@ -436,7 +451,7 @@ class ReaderView(context: Context) : View(context) {
             val icon = translateIcon ?: continue
             val enabled = listener?.canTranslate() ?: true
             icon.setTint(if (enabled) colors.secondary else (colors.tertiary and 0x00FFFFFF) or (0x59 shl 24))
-            val inset = dp(2f).roundToInt()
+            val inset = min(dp(2f), controlSize / 9).roundToInt()
             icon.setBounds(
                 rect.left.roundToInt() + inset, rect.top.roundToInt() + inset, rect.right.roundToInt() - inset,
                 rect.bottom.roundToInt() - inset)
@@ -746,7 +761,8 @@ class ReaderView(context: Context) : View(context) {
             return
         }
         // In the margins (not over text), a tap turns the page, as in other readers.
-        if (x > width - marginRight) return nextSpread()
+        // A narrow margin is still a finger wide here; words were tried above.
+        if (x > width - max(marginRight, dp(26f))) return nextSpread()
         if (x < marginLeft - 2 * controlSlop - controlSize) return previousSpread()
         selectWord(x, y)
     }

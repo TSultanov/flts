@@ -24,9 +24,12 @@ enum class Appearance(val title: String) {
 /// Reader preferences shared by the reader's menu, Settings and the reader.
 object ReaderPreferences {
     const val DEFAULT_FONT_SIZE = 18f
+    val MARGIN_SCALES = 0.5f..3f
+    const val MARGIN_STEP = 0.25f
 
     private var loaded = false
     private var size by mutableFloatStateOf(DEFAULT_FONT_SIZE)
+    private var margins by mutableFloatStateOf(1f)
     private var look by mutableStateOf(Appearance.SYSTEM)
 
     private fun load() {
@@ -34,6 +37,7 @@ object ReaderPreferences {
         loaded = true
         val store = AppPrefs.store
         size = store.getFloat("readerFontSize", DEFAULT_FONT_SIZE)
+        margins = store.getFloat("readerMarginScale", 1f)
         look = runCatching { Appearance.valueOf(store.getString("appearance", null) ?: "SYSTEM") }
             .getOrDefault(Appearance.SYSTEM)
     }
@@ -48,6 +52,18 @@ object ReaderPreferences {
             load()
             size = value.coerceIn(12f, 36f)
             AppPrefs.store.edit().putFloat("readerFontSize", size).apply()
+        }
+
+    /// Side margins, as a multiple of the default for the screen.
+    var marginScale: Float
+        get() {
+            load()
+            return margins
+        }
+        set(value) {
+            load()
+            margins = value.coerceIn(MARGIN_SCALES)
+            AppPrefs.store.edit().putFloat("readerMarginScale", margins).apply()
         }
 
     var appearance: Appearance

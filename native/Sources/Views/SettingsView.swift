@@ -355,6 +355,15 @@ struct ReadingSettings: View {
             Text("The quick brown fox jumps over the lazy dog.")
                 .font(.system(size: prefs.fontSize, design: .serif))
         }
+        Section("Page") {
+            Slider(value: $prefs.marginScale, in: ReaderPreferences.marginScales, step: ReaderPreferences.marginStep) {
+                Text("Margins")
+            } minimumValueLabel: {
+                Text("Narrow")
+            } maximumValueLabel: {
+                Text("Wide")
+            }
+        }
     }
 }
 

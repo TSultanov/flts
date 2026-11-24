@@ -84,10 +84,11 @@ private class ReaderCoordinator(
     private var revision = -1
     private var saveJob: Job? = null
 
-    fun update(view: ReaderView, typography: ReaderTypography, colors: ReaderColors) {
+    fun update(view: ReaderView, typography: ReaderTypography, colors: ReaderColors, marginScale: Float) {
         this.view = view
         controls.view = view
         view.setStyle(typography, colors)
+        view.marginScale = marginScale
         if (!applied) {
             if (!chapter.loaded) return
             applied = true
@@ -227,6 +228,7 @@ fun ReaderHost(
         language = chapter.language,
     )
     val colors = readerColors()
+    val marginScale = ReaderPreferences.marginScale
     AndroidView(
         factory = { context -> ReaderView(context).also { it.listener = coordinator } },
         modifier = modifier,
@@ -236,7 +238,7 @@ fun ReaderHost(
             chapter.loaded
             activity.entries
             book.summary
-            coordinator.update(view, typography, colors)
+            coordinator.update(view, typography, colors, marginScale)
         },
     )
     DisposableEffect(coordinator) {

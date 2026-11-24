@@ -95,6 +95,9 @@ final class ReaderCanvas: PlatformView {
     /// The paragraph button in the left margin, and its distance from the text.
     var controlSize: CGFloat = 22
     var controlGap: CGFloat = 10
+    /// A phone-sized view: tighter margins and a smaller paragraph button.
+    var tight = false
+    private(set) var marginScale: CGFloat = 1
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -171,6 +174,21 @@ final class ReaderCanvas: PlatformView {
         guard typography != self.typography else { return }
         self.typography = typography
         relayout(keeping: sticky ?? currentAnchor())
+    }
+
+    func setMarginScale(_ scale: CGFloat) {
+        guard scale != marginScale else { return }
+        marginScale = scale
+        updateMargins()
+        relayout(keeping: sticky ?? currentAnchor())
+    }
+
+    func updateMargins() {
+        let side = ((tight ? 13 : 56) * marginScale).rounded()
+        margins = PlatformEdgeInsets(top: tight ? 20 : 40, left: side, bottom: tight ? 34 : 44, right: side)
+        // The paragraph button shrinks to fit the left margin.
+        controlSize = min(tight ? 18 : 22, max(side - 2, 6))
+        controlGap = min(tight ? 5 : 10, max(side - controlSize - 3, 1))
     }
 
     func currentAnchor() -> ReadingAnchor? {
@@ -418,7 +436,7 @@ final class ReaderCanvas: PlatformView {
             } else {
                 let enabled = delegate?.readerCanTranslate(self) ?? true
                 let tint = enabled ? PlatformColor.readerSecondary : PlatformColor.readerTertiary.withAlphaComponent(0.35)
-                guard let symbol = PlatformImage.readerSymbol("character.bubble", pointSize: (controlSize * 0.6).rounded(), tint: tint) else { continue }
+                guard let symbol = PlatformImage.readerSymbol("character.bubble", pointSize: (controlSize * (controlSize < 16 ? 0.85 : 0.6)).rounded(), tint: tint) else { continue }
                 symbol.draw(in: rect.insetBy(dx: (rect.width - symbol.size.width) / 2, dy: (rect.height - symbol.size.height) / 2))
             }
         }

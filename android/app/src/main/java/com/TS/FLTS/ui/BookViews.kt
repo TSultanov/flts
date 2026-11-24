@@ -319,6 +319,14 @@ private fun ReadingMenu() {
                 text = { Text("Default Size") },
                 onClick = { ReaderPreferences.fontSize = ReaderPreferences.DEFAULT_FONT_SIZE })
             HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text("Narrower Margins") },
+                onClick = { ReaderPreferences.marginScale -= ReaderPreferences.MARGIN_STEP })
+            DropdownMenuItem(
+                text = { Text("Wider Margins") },
+                onClick = { ReaderPreferences.marginScale += ReaderPreferences.MARGIN_STEP })
+            DropdownMenuItem(text = { Text("Default Margins") }, onClick = { ReaderPreferences.marginScale = 1f })
+            HorizontalDivider()
             for (appearance in Appearance.entries) {
                 DropdownMenuItem(
                     text = { Text(appearance.title) },

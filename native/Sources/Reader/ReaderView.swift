@@ -48,6 +48,7 @@ struct ReaderView {
     let activity: TranslationActivityStore
     let controls: ReaderControls
     let typography: ReaderTypography
+    let marginScale: CGFloat
     let model: String
     /// Read by the caller's body so SwiftUI updates the canvas on changes.
     let revision: Int
@@ -67,6 +68,7 @@ struct ReaderView {
         c.parent = self
         controls.canvas = canvas
         canvas.setTypography(typography)
+        canvas.setMarginScale(marginScale)
 
         if c.chapterKey != ChapterKey(book: book.bookId, chapter: chapter.chapterId) {
             guard chapter.loaded else { return }

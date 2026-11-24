@@ -61,15 +61,10 @@ extension ReaderCanvas: @preconcurrency UIEditMenuInteractionDelegate {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        // A phone has no room for desktop margins. They are equal on both
-        // sides; the paragraph button shrinks to fit the left one.
+        // A phone has no room for desktop margins.
         // A phone in landscape is wide but short: it keeps the tight margins.
-        let tight = bounds.width < 600 || bounds.height < 500
-        margins =
-            tight
-            ? UIEdgeInsets(top: 20, left: 26, bottom: 34, right: 26) : UIEdgeInsets(top: 40, left: 56, bottom: 44, right: 56)
-        controlSize = tight ? 18 : 22
-        controlGap = tight ? 5 : 10
+        tight = bounds.width < 600 || bounds.height < 500
+        updateMargins()
         sizeChanged()
     }
 
@@ -90,7 +85,8 @@ extension ReaderCanvas: @preconcurrency UIEditMenuInteractionDelegate {
             return
         }
         // In the margins (not over text), a tap turns the page, as in other readers.
-        if point.x > bounds.width - margins.right { return nextSpread() }
+        // A narrow margin is still a finger wide here; words were tried above.
+        if point.x > bounds.width - max(margins.right, 26) { return nextSpread() }
         if point.x < margins.left - 2 * controlSlop - controlSize { return previousSpread() }
         selectWord(at: point)
     }
