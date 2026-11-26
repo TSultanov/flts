@@ -481,6 +481,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_removed_card_is_written_again_after_its_history_is_pruned() {
+        let dir = TempDir::new("flts_cards");
+        let a = LibraryStore::open(&dir.path.join("a/library")).unwrap();
+        let b = LibraryStore::open(&dir.path.join("b/library")).unwrap();
+        let (cards_a, cards_b) = (
+            LibraryCardStore::new(a.clone()),
+            LibraryCardStore::new(b.clone()),
+        );
+        let sync = || {
+            crate::test_utils::copy_shards(a.shared_dir(), b.shared_dir());
+            crate::test_utils::copy_shards(b.shared_dir(), a.shared_dir());
+            for store in [&a, &b] {
+                store.run_blocking(|db| db.refresh().map(drop)).unwrap();
+            }
+        };
+        create(&cards_a, card("poder", "мочь", vec![example(0)])).await;
+        sync();
+        let poder = vec![("spa".to_owned(), "rus".to_owned(), "poder".to_owned())];
+        assert_eq!(cards_b.remove_batch(poder).await.unwrap(), 1);
+        sync();
+        sync();
+        let pruned = a.run_blocking(|db| db.maintain(&[])).unwrap().pruned;
+        assert!(pruned > 0, "the rows the removal wrote over are dropped");
+
+        let again = card("poder", "мочь", vec![example(0)]);
+        create(&cards_a, again.clone()).await;
+        assert_eq!(
+            cards_a.load("spa", "rus", "poder").await.unwrap(),
+            Some(again)
+        );
+    }
+
+    #[tokio::test]
     async fn update_anki_data_is_a_compare_and_set() {
         let (_dir, store) = fixture();
         let first = anki(AnkiState::Active, Some(5.0));

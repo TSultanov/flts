@@ -186,23 +186,21 @@ impl LibraryDb {
     {
         use dbsync::schema::{Holds, Table};
         let table = Holds::<E>::table(self);
-        let removed = match table.winner(id)? {
-            Some(row) => table.versions().raw_at(row)?.is_removed(),
-            None => false,
+        let removal = match table.winner(id)? {
+            Some(row) => table.versions().raw_at(row)?,
+            None => return Ok(false),
         };
-        if !removed {
+        if !removal.is_removed() {
             return Ok(false);
         }
-        let mut last = None;
+        let mut last = removal.dot();
         for row in table.versions_of(id)? {
             let version = table.versions().raw_at(row)?;
             if !version.is_removed() {
-                last = Some(version.dot());
+                last = version.dot();
             }
         }
-        let dot =
-            last.ok_or_else(|| dbsync::Error::invalid("a removed row with nothing to restore"))?;
-        self.restore(id, dot)?;
+        self.restore(id, last)?;
         Ok(true)
     }
 
