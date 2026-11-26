@@ -60,7 +60,8 @@ make install-android-native   # adb install over the Tauri app, keeping its data
 ```
 
 `cd android && ./gradlew :app:assembleDebug` builds the `.dev` variant with a
-debug core. The build needs NDK r27 (`NDK_HOME`), Go, and JDK 21 for Gradle;
+debug core. The build needs NDK r27 (`NDK_HOME`), Go, and a JDK 21 to compile
+with (Gradle itself runs on Java 17 to 27);
 `FLTS_ANDROID_ABIS=arm64-v8a,x86_64` adds ABIs. Release signing reads
 `FLTS_KEYSTORE`, `FLTS_KEY_ALIAS`, `FLTS_STORE_PASS` and `FLTS_KEY_PASS`, as
 `site/build-android.sh` does, and falls back to the debug keystore.
