@@ -11,8 +11,7 @@ ABIS=("$@")
 [ ${#ABIS[@]} -gt 0 ] || ABIS=(arm64-v8a x86_64)
 
 export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-export ANDROID_HOME="${ANDROID_HOME:-/opt/homebrew/share/android-commandlinetools}"
-export NDK_HOME="${NDK_HOME:-${ANDROID_NDK_HOME:-$(ls -d "$ANDROID_HOME"/ndk/27.* | sort | tail -1)}}"
+. "$ROOT/scripts/android-env.sh"
 # The app's minSdk.
 export FLTS_ANDROID_API="${FLTS_ANDROID_API:-29}"
 JNILIBS="$ROOT/android/app/src/main/jniLibs"
@@ -59,7 +58,11 @@ GEN_OUT="$ROOT/android/app/src/main/java"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 # From the host library: a ship-profile one is stripped of the metadata this reads.
-target/debug/uniffi-bindgen generate --library target/debug/libflts_ffi.dylib --language kotlin --no-format --out-dir "$TMP"
+case "$(uname -s)" in
+  Darwin) HOST_LIB=target/debug/libflts_ffi.dylib ;;
+  *) HOST_LIB=target/debug/libflts_ffi.so ;;
+esac
+target/debug/uniffi-bindgen generate --library "$HOST_LIB" --language kotlin --no-format --out-dir "$TMP"
 (cd "$TMP" && find . -type f) | while read -r f; do
   mkdir -p "$GEN_OUT/$(dirname "$f")"
   cmp -s "$TMP/$f" "$GEN_OUT/$f" || cp "$TMP/$f" "$GEN_OUT/$f"

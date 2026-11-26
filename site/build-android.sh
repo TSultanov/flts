@@ -14,10 +14,8 @@
 set -euo pipefail
 cd "$(dirname "$0")" # site/ (Tauri project root)
 
-# --- Android SDK / NDK / build-tools (fall back to the Homebrew layout) ---
-export ANDROID_HOME="${ANDROID_HOME:-/opt/homebrew/share/android-commandlinetools}"
-[[ -n "${NDK_HOME:-}" ]] || export NDK_HOME="$(ls -d "$ANDROID_HOME"/ndk/*/ 2>/dev/null | sort -V | tail -1 | sed 's:/$::')"
-[[ -n "${ANDROID_NDK_HOME:-}" ]] || export ANDROID_NDK_HOME="$NDK_HOME"
+# --- Android SDK / NDK / build-tools (Homebrew or Android Studio layout, macOS or Linux) ---
+. ../scripts/android-env.sh
 BT="$(ls -d "$ANDROID_HOME"/build-tools/*/ 2>/dev/null | sort -V | tail -1 | sed 's:/$::')"
 
 # --- Signing key (debug by default; override via env for a release key) ---
