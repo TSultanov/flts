@@ -21,6 +21,7 @@ struct FLTSApp: App {
                 // Unit tests run inside the app; they must not open a real library.
                 guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
                 await model.startAsync()
+                Platform.excludeSyncIdentityFromBackup()
             }
             .onChange(of: phase) { _, phase in
                 if phase == .background {

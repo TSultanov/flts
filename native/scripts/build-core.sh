@@ -7,10 +7,10 @@ set -euo pipefail
 # Xcode exports hundreds of build settings (linker, strip, SDK, deployment
 # targets); cargo and its build scripts must not see them.
 if [ -z "${FLTS_CLEAN_ENV:-}" ]; then
-  exec /usr/bin/env -i FLTS_CLEAN_ENV=1 HOME="$HOME" USER="${USER:-}" TMPDIR="${TMPDIR:-/tmp}" \
-    FLTS_CORE_PROFILE="${FLTS_CORE_PROFILE:-}" FLTS_MACOS_MIN="${FLTS_MACOS_MIN:-}" \
-    FLTS_IOS_MIN="${FLTS_IOS_MIN:-}" \
-    /bin/bash "$0" "$@"
+    exec /usr/bin/env -i FLTS_CLEAN_ENV=1 HOME="$HOME" USER="${USER:-}" TMPDIR="${TMPDIR:-/tmp}" \
+        FLTS_CORE_PROFILE="${FLTS_CORE_PROFILE:-}" FLTS_MACOS_MIN="${FLTS_MACOS_MIN:-}" \
+        FLTS_IOS_MIN="${FLTS_IOS_MIN:-}" FLTS_SKIP_CORE="${FLTS_SKIP_CORE:-}" \
+        /bin/bash "$0" "$@"
 fi
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -21,12 +21,19 @@ export MACOSX_DEPLOYMENT_TARGET="${FLTS_MACOS_MIN:-15.0}"
 
 PLATFORM="${2:-macos}"
 case "$PLATFORM" in
-  macos) TARGET_ARGS=() TARGET_DIR="target" LIB_OUT="$ROOT/native/build/core" ;;
-  ios) TARGET_ARGS=(--target aarch64-apple-ios) TARGET_DIR="target/aarch64-apple-ios" LIB_OUT="$ROOT/native/build/core-ios" ;;
-  ios-sim) TARGET_ARGS=(--target aarch64-apple-ios-sim) TARGET_DIR="target/aarch64-apple-ios-sim" LIB_OUT="$ROOT/native/build/core-ios-sim" ;;
-  *) echo "unknown platform: $PLATFORM" >&2; exit 2 ;;
+    macos) TARGET_ARGS=() TARGET_DIR="target" LIB_OUT="$ROOT/native/build/core" ;;
+    ios) TARGET_ARGS=(--target aarch64-apple-ios) TARGET_DIR="target/aarch64-apple-ios" LIB_OUT="$ROOT/native/build/core-ios" ;;
+    ios-sim) TARGET_ARGS=(--target aarch64-apple-ios-sim) TARGET_DIR="target/aarch64-apple-ios-sim" LIB_OUT="$ROOT/native/build/core-ios-sim" ;;
+    *)
+        echo "unknown platform: $PLATFORM" >&2
+        exit 2
+        ;;
 esac
 export IPHONEOS_DEPLOYMENT_TARGET="${FLTS_IOS_MIN:-18.0}"
+
+if [ "${FLTS_SKIP_CORE:-}" = "1" ] && [ -f "$LIB_OUT/libflts_ffi.a" ]; then
+    exit 0
+fi
 
 cd "$ROOT"
 if [ "$PROFILE" = "debug" ]; then

@@ -7,7 +7,8 @@
 set -euo pipefail
 NATIVE="$(cd "$(dirname "$0")/.." && pwd)"
 FIXTURE="$NATIVE/build/ui-fixture"
-SIM="${1:-4A8E245A-F9AD-41F8-AD90-554AC8B87AF9}"
+SIM="${1:-$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; devs=[x for r in sorted(d, reverse=True) if "iOS" in r for x in d[r] if "iPhone" in x["name"]]; booted=[x for x in devs if x["state"]=="Booted"]; pick=booted or devs; print(pick[0]["udid"] if pick else "")')}"
+[ -n "$SIM" ] || { echo "no available iPhone simulator found" >&2; exit 1; }
 RUN="$NATIVE/build/ios-container-check"
 [ -f "$FIXTURE/config.json" ] || { echo "run scripts/ui-tests.sh once to seed the fixture" >&2; exit 1; }
 mkdir -p "$RUN"

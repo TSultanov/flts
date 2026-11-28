@@ -19,6 +19,21 @@ enum Platform {
     }
     #endif
 
+    #if os(iOS)
+    /// Excludes the per-device Syncthing identity/index directory from iCloud
+    /// backups while keeping `library/` and `config.json` backed up.
+    static func excludeSyncIdentityFromBackup() {
+        guard (ProcessInfo.processInfo.environment["FLTS_CONFIG_DIR"] ?? "").isEmpty else { return }
+        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        else { return }
+        var url = support.appendingPathComponent("com.TS.FLTS/syncthing", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
+    }
+    #endif
+
     static func open(_ url: URL) {
         #if os(macOS)
         NSWorkspace.shared.open(url)

@@ -17,6 +17,7 @@
 		1B174B6C92AD61E5E3014A8F /* ReaderCanvas+iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB9767B5ACC22185AE232AC9 /* ReaderCanvas+iOS.swift */; };
 		1D805F049F0604182CFEAF02 /* RealLibraryCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = 362BAF23934FFA4B50211FBC /* RealLibraryCheck.swift */; };
 		2385F1EFC1043E1768C64448 /* AppDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD672C8ADB59753249A8346A /* AppDefaults.swift */; };
+		2E1B5FABB743681053A54844 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B52964B934E920D0C065E594 /* PrivacyInfo.xcprivacy */; };
 		333B8E0B798B3DCD58F81E1B /* AppShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81E0E9F56451A0E9ECCA6BA4 /* AppShared.swift */; };
 		34348C68DFC32ABCA0A2F821 /* ReaderCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = 852DAE2201EA604647746074 /* ReaderCanvas.swift */; };
 		35FD173C6FB4B63BF0C791E0 /* EventHub.swift in Sources */ = {isa = PBXBuildFile; fileRef = A320CFF769560DB88A407B7F /* EventHub.swift */; };
@@ -79,6 +80,7 @@
 		E19BAE34AE01D4472A5486AA /* AppDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD672C8ADB59753249A8346A /* AppDefaults.swift */; };
 		E1CACD1F098516CC34D29CE7 /* BookStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DBF3A20A2A2021F0C00A8F7 /* BookStore.swift */; };
 		E2AF0C0B2A6EF430399F2A33 /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CE17BCA5E5842EA67FF182A /* ReaderView.swift */; };
+		E4A9C2935B6CED5594A45F73 /* iOSReaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38EF90941D5A1C191BBBC07D /* iOSReaderTests.swift */; };
 		E5BE98D482909C5EDAA5FD3A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DA8BC76C06AE6DA333A0F019 /* Assets.xcassets */; };
 		EEBD920ACFC0935697524D12 /* Platform.swift in Sources */ = {isa = PBXBuildFile; fileRef = C204E74960D0BE3853A082C0 /* Platform.swift */; };
 		EFDECEF14B7166604A33722B /* ReaderCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = 852DAE2201EA604647746074 /* ReaderCanvas.swift */; };
@@ -88,6 +90,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		0DCF237C01649470419294AC /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2DA203E44AE695B71FD419BF /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EE07DCEB5BF55DAAD009B41B;
+			remoteInfo = "FLTS-iOS";
+		};
 		19E9C6AE3CDA470AD34E26CA /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 2DA203E44AE695B71FD419BF /* Project object */;
@@ -121,6 +130,7 @@
 		2DBF3A20A2A2021F0C00A8F7 /* BookStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookStore.swift; sourceTree = "<group>"; };
 		3365A38CF4D2D2C35A844F6D /* TouchFeatures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TouchFeatures.swift; sourceTree = "<group>"; };
 		362BAF23934FFA4B50211FBC /* RealLibraryCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealLibraryCheck.swift; sourceTree = "<group>"; };
+		38EF90941D5A1C191BBBC07D /* iOSReaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iOSReaderTests.swift; sourceTree = "<group>"; };
 		3EAB6E06F2BDDB11536750AF /* FLTS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FLTS.entitlements; sourceTree = "<group>"; };
 		45721FA7B8BB10D4A9229905 /* FLTSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FLTSApp.swift; sourceTree = "<group>"; };
 		4AB7B0CF2CE6191870CA9198 /* BookViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookViews.swift; sourceTree = "<group>"; };
@@ -137,6 +147,7 @@
 		800EFD0D81D9FAAEDFDEF28A /* AppToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppToolbar.swift; sourceTree = "<group>"; };
 		808EF6D774D2C5DBD545A952 /* TranslationActivityStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranslationActivityStore.swift; sourceTree = "<group>"; };
 		80FF9AB8FDB3254F370AD23A /* LibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryStore.swift; sourceTree = "<group>"; };
+		8167578EFE2281EC1A701C85 /* FLTSiOSTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FLTSiOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		81E0E9F56451A0E9ECCA6BA4 /* AppShared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShared.swift; sourceTree = "<group>"; };
 		826E12A28BF0C377970BD0F2 /* LyricsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyricsWindow.swift; sourceTree = "<group>"; };
 		852DAE2201EA604647746074 /* ReaderCanvas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderCanvas.swift; sourceTree = "<group>"; };
@@ -144,6 +155,7 @@
 		A320CFF769560DB88A407B7F /* EventHub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventHub.swift; sourceTree = "<group>"; };
 		B2250D32D8694EE7BF4C6965 /* LibraryPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryPage.swift; sourceTree = "<group>"; };
 		B43A8279FF58466B28B95E2E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B52964B934E920D0C065E594 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		BA78D2BEBD2D2F194292BB0E /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		BCB17544F8057188DBE9828E /* SyncSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncSettings.swift; sourceTree = "<group>"; };
 		C204E74960D0BE3853A082C0 /* Platform.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Platform.swift; sourceTree = "<group>"; };
@@ -216,11 +228,20 @@
 			children = (
 				7AD04AE227499298B4AAB3EE /* FLTS-iOS.app */,
 				FA267B8B9DB641AC564860E2 /* FLTS.app */,
+				8167578EFE2281EC1A701C85 /* FLTSiOSTests.xctest */,
 				27BE31E6FA971C07733F588B /* FLTSiOSUITests.xctest */,
 				DEBB091B25A0810DE5E01E7F /* FLTSTests.xctest */,
 				7FABDCCEFCFBD32B6B09CF9C /* FLTSUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		52A4A497F4A6868F8BD9A953 /* Tests-iOS */ = {
+			isa = PBXGroup;
+			children = (
+				38EF90941D5A1C191BBBC07D /* iOSReaderTests.swift */,
+			);
+			path = "Tests-iOS";
 			sourceTree = "<group>";
 		};
 		570D54AAA08EC80C2587274F /* Tests */ = {
@@ -253,6 +274,7 @@
 				CF99911E9E06A5A2B10C1158 /* Resources */,
 				B4E8D4FC7D781656FB35A64A /* Sources */,
 				570D54AAA08EC80C2587274F /* Tests */,
+				52A4A497F4A6868F8BD9A953 /* Tests-iOS */,
 				2E39C5445ED3688DCDBE26A5 /* UITests */,
 				9BE6A7A7553AA8BE183B8603 /* UITests-iOS */,
 				4A27128F103E99E4BD6B1506 /* Products */,
@@ -294,6 +316,7 @@
 			isa = PBXGroup;
 			children = (
 				B43A8279FF58466B28B95E2E /* Assets.xcassets */,
+				B52964B934E920D0C065E594 /* PrivacyInfo.xcprivacy */,
 			);
 			path = iOS;
 			sourceTree = "<group>";
@@ -354,6 +377,24 @@
 			productName = FLTS;
 			productReference = FA267B8B9DB641AC564860E2 /* FLTS.app */;
 			productType = "com.apple.product-type.application";
+		};
+		6965FEADD380E2A9BC8A3B1C /* FLTSiOSTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6D846F7DA8D65CE4F2D50EF6 /* Build configuration list for PBXNativeTarget "FLTSiOSTests" */;
+			buildPhases = (
+				D2CB17E74D701B11B0BFD79F /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				128ACD23F904F72CB73E051F /* PBXTargetDependency */,
+			);
+			name = FLTSiOSTests;
+			packageProductDependencies = (
+			);
+			productName = FLTSiOSTests;
+			productReference = 8167578EFE2281EC1A701C85 /* FLTSiOSTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 		91729FB18C4AFD65A8B00A5A /* FLTSiOSUITests */ = {
 			isa = PBXNativeTarget;
@@ -441,6 +482,9 @@
 						DevelopmentTeam = Y7859GAXS2;
 						ProvisioningStyle = Automatic;
 					};
+					6965FEADD380E2A9BC8A3B1C = {
+						DevelopmentTeam = Y7859GAXS2;
+					};
 					91729FB18C4AFD65A8B00A5A = {
 						DevelopmentTeam = Y7859GAXS2;
 						TestTargetID = EE07DCEB5BF55DAAD009B41B;
@@ -474,6 +518,7 @@
 			targets = (
 				106AFD4559FE89BE936980FC /* FLTS */,
 				EE07DCEB5BF55DAAD009B41B /* FLTS-iOS */,
+				6965FEADD380E2A9BC8A3B1C /* FLTSiOSTests */,
 				91729FB18C4AFD65A8B00A5A /* FLTSiOSUITests */,
 				CC7BAD23A8F5EBA862E7F9E6 /* FLTSTests */,
 				E98851780BA7EC0BCE739D80 /* FLTSUITests */,
@@ -495,6 +540,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AC35C01EE305AB07DEFC7310 /* Assets.xcassets in Resources */,
+				2E1B5FABB743681053A54844 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -653,9 +699,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D2CB17E74D701B11B0BFD79F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E4A9C2935B6CED5594A45F73 /* iOSReaderTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		128ACD23F904F72CB73E051F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EE07DCEB5BF55DAAD009B41B /* FLTS-iOS */;
+			targetProxy = 0DCF237C01649470419294AC /* PBXContainerItemProxy */;
+		};
 		557C68C77EE611DB1C5C2551 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = EE07DCEB5BF55DAAD009B41B /* FLTS-iOS */;
@@ -692,6 +751,25 @@
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FLTS.app/Contents/MacOS/FLTS";
 			};
 			name = Release;
+		};
+		3110A8D4FE2FF70D61CDFCC5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.TS.FLTS.tests;
+				SDKROOT = iphoneos;
+				SWIFT_INCLUDE_PATHS = "$(PROJECT_DIR)/Generated";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FLTS.app/FLTS";
+			};
+			name = Debug;
 		};
 		41A7266DDD0087B9FD47D156 /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -754,6 +832,25 @@
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FLTS.app/Contents/MacOS/FLTS";
 			};
 			name = Debug;
+		};
+		694C5BC184B8E213179B0406 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.TS.FLTS.tests;
+				SDKROOT = iphoneos;
+				SWIFT_INCLUDE_PATHS = "$(PROJECT_DIR)/Generated";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FLTS.app/FLTS";
+			};
+			name = Release;
 		};
 		75FAAD752A4625356E445077 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -990,7 +1087,6 @@
 				MARKETING_VERSION = 0.1.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
-				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
@@ -1019,6 +1115,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		6D846F7DA8D65CE4F2D50EF6 /* Build configuration list for PBXNativeTarget "FLTSiOSTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3110A8D4FE2FF70D61CDFCC5 /* Debug */,
+				694C5BC184B8E213179B0406 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		A61A775587D319554E8B2541 /* Build configuration list for PBXNativeTarget "FLTS" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

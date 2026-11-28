@@ -16,7 +16,9 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: false
     # The Rust core is built for the host arch only; universal is future work.
     ARCHS: arm64
-    ONLY_ACTIVE_ARCH: true
+  configs:
+    Debug:
+      ONLY_ACTIVE_ARCH: true
 targets:
   FLTS:
     type: application
@@ -83,6 +85,7 @@ targets:
       - path: Sources
       - path: Generated/flts_ffi.swift
       - path: iOS/Assets.xcassets
+      - path: iOS/PrivacyInfo.xcprivacy
     info:
       path: iOS/Info.plist
       properties:
@@ -124,7 +127,21 @@ targets:
           if [ "$PLATFORM_NAME" = "iphonesimulator" ]; then CORE=ios-sim; else CORE=ios; fi
           "$PROJECT_DIR/scripts/build-core.sh" "$PROFILE" "$CORE"
     scheme:
-      testTargets: [FLTSiOSUITests]
+      testTargets: [FLTSiOSTests, FLTSiOSUITests]
+  FLTSiOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources: [Tests-iOS]
+    dependencies:
+      - target: FLTS-iOS
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: true
+        SWIFT_INCLUDE_PATHS: $(PROJECT_DIR)/Generated
+        PRODUCT_BUNDLE_IDENTIFIER: com.TS.FLTS.tests
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/FLTS.app/FLTS
+        BUNDLE_LOADER: $(TEST_HOST)
   FLTSiOSUITests:
     type: bundle.ui-testing
     platform: iOS

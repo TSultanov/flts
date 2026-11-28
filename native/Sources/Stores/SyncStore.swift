@@ -52,6 +52,9 @@ final class SyncStore: CoreBound {
 
     func setEnabled(_ enabled: Bool) async {
         await run { try await $0.syncSetEnabled(enabled: enabled) }
+        #if os(iOS)
+        if enabled { Platform.excludeSyncIdentityFromBackup() }
+        #endif
     }
 
     /// The name other devices see when none was set yet. iOS has no host name
