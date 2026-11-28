@@ -1,6 +1,7 @@
 package com.TS.FLTS.ui
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -13,7 +14,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -43,10 +43,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -71,27 +73,71 @@ fun WordPanel(model: AppModel, session: BookSession, expanded: Boolean, setExpan
     val info = session.word.info
     // Upper bound the user drags; the panel is shorter when its content is.
     var height by remember { mutableFloatStateOf(AppPrefs.store.getFloat("wordPanelHeight", 320f)) }
+    var dragging by remember { mutableStateOf(false) }
+    val detailsHeightPx = remember { intArrayOf(0) }
+    LaunchedEffect(expanded, info != null) {
+        if (!expanded || info == null) dragging = false
+    }
     BoxWithConstraints(modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
         val limit = maxHeight * 0.75f
+        val wide = maxWidth >= 600.dp
+        val sizeAnimation = if (AppPrefs.animationsOff || dragging) {
+            Modifier
+        } else {
+            Modifier.animateContentSize(animationSpec = tween(180), alignment = Alignment.BottomCenter)
+        }
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = MaterialTheme.colorScheme.surfaceContainer,
             shadowElevation = if (expanded) 8.dp else 0.dp,
         ) {
-            Column(if (AppPrefs.animationsOff) Modifier else Modifier.animateContentSize()) {
+            Column(sizeAnimation) {
                 HorizontalDivider()
                 if (expanded && info != null) {
                     val density = LocalDensity.current
-                    ResizeHandle { delta ->
-                        height = (height - delta / density.density).coerceIn(120f, limit.value)
-                        AppPrefs.store.edit().putFloat("wordPanelHeight", height).apply()
-                    }
+                    val scrollState = rememberScrollState()
+                    val minHeightDp = minOf(120f, limit.value)
+                    ResizeHandle(
+                        onDragStart = {
+                            dragging = true
+                            val shownDp = detailsHeightPx[0] / density.density
+                            if (shownDp > 0f) {
+                                height = minOf(height, maxOf(shownDp, minHeightDp))
+                            }
+                        },
+                        onDrag = { delta ->
+                            val contentPx = detailsHeightPx[0] + scrollState.maxValue
+                            val contentMaxDp = if (contentPx > 0) contentPx / density.density else limit.value
+                            val upper = minOf(limit.value, maxOf(contentMaxDp, minHeightDp))
+                            height = (height - delta / density.density).coerceIn(minHeightDp, upper)
+                        },
+                        onDragEnd = {
+                            dragging = false
+                            AppPrefs.store.edit().putFloat("wordPanelHeight", height).apply()
+                        },
+                    )
                     WordLine(model, session, info, bar = false, expanded = true, setExpanded = setExpanded)
                     HorizontalDivider()
-                    Box(Modifier.heightIn(max = minOf(maxOf(height, 120f).dp, limit)).verticalScroll(rememberScrollState())) {
-                        WordDetails(info, wide = this@BoxWithConstraints.maxWidth >= 600.dp)
+                    Box(
+                        Modifier
+                            .layout { measurable, constraints ->
+                                // Read `height` in the layout phase so dragging does not recompose the details.
+                                val maxPx = minOf(maxOf(height, minHeightDp).dp, limit).roundToPx()
+                                val capped = constraints.copy(
+                                    minHeight = constraints.minHeight.coerceAtMost(maxPx),
+                                    maxHeight = constraints.maxHeight.coerceAtMost(maxPx),
+                                )
+                                val placeable = measurable.measure(capped)
+                                detailsHeightPx[0] = placeable.height
+                                layout(placeable.width, placeable.height) {
+                                    placeable.placeRelative(0, 0)
+                                }
+                            }
+                            .verticalScroll(scrollState),
+                    ) {
+                        WordDetails(info, wide = wide)
                     }
-                    WordFooter(model, session, info, wide = this@BoxWithConstraints.maxWidth >= 600.dp)
+                    WordFooter(model, session, info, wide = wide)
                 } else {
                     WordLine(model, session, info, bar = true, expanded = false, setExpanded = setExpanded)
                 }
@@ -101,12 +147,23 @@ fun WordPanel(model: AppModel, session: BookSession, expanded: Boolean, setExpan
 }
 
 @Composable
-private fun ResizeHandle(onDrag: (Float) -> Unit) {
+private fun ResizeHandle(
+    onDragStart: () -> Unit,
+    onDrag: (Float) -> Unit,
+    onDragEnd: () -> Unit,
+) {
+    val currentStart by rememberUpdatedState(onDragStart)
+    val currentDrag by rememberUpdatedState(onDrag)
+    val currentEnd by rememberUpdatedState(onDragEnd)
     Box(
         Modifier.fillMaxWidth().height(24.dp).pointerInput(Unit) {
-            detectVerticalDragGestures { change, amount ->
+            detectVerticalDragGestures(
+                onDragStart = { currentStart() },
+                onDragEnd = { currentEnd() },
+                onDragCancel = { currentEnd() },
+            ) { change, amount ->
                 change.consume()
-                onDrag(amount)
+                currentDrag(amount)
             }
         },
         contentAlignment = Alignment.Center,
