@@ -385,13 +385,17 @@ struct CardButton: View {
     var body: some View {
         switch state {
         case .idle, .failed:
-            Button(action: action) {
+            let button = Button(action: action) {
                 Label("Add to Anki", systemImage: "rectangle.stack.badge.plus")
-                    .labelStyle(compact ? AnyLabelStyle(.iconOnly) : AnyLabelStyle(.titleAndIcon))
             }
             .buttonStyle(.borderless)
             .help(failureMessage ?? "Add an Anki card for this word")
             .foregroundStyle(failureMessage == nil ? Color.primary : Color.red)
+            if compact {
+                button.labelStyle(.iconOnly)
+            } else {
+                button.labelStyle(.titleAndIcon)
+            }
         case .creating:
             ProgressView().controlSize(.small)
         case .created:
@@ -403,18 +407,6 @@ struct CardButton: View {
 
     private var failureMessage: String? {
         if case .failed(let message) = state { message } else { nil }
-    }
-}
-
-struct AnyLabelStyle: LabelStyle {
-    private let make: (Configuration) -> AnyView
-
-    init<S: LabelStyle>(_ style: S) {
-        make = { AnyView(style.makeBody(configuration: $0)) }
-    }
-
-    func makeBody(configuration: Configuration) -> some View {
-        make(configuration)
     }
 }
 

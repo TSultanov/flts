@@ -23,12 +23,14 @@ struct ImportSheet: View {
             Divider()
             // Both stay alive, so switching does not discard a parsed book or typed text.
             ZStack {
-                EpubImport(close: { dismiss() })
+                EpubImport(isActive: kind == .epub, close: { dismiss() })
                     .opacity(kind == .epub ? 1 : 0)
                     .disabled(kind != .epub)
-                TextImport(close: { dismiss() })
+                    .accessibilityHidden(kind != .epub)
+                TextImport(isActive: kind == .text, close: { dismiss() })
                     .opacity(kind == .text ? 1 : 0)
                     .disabled(kind != .text)
+                    .accessibilityHidden(kind != .text)
             }
         }
         .sheetSize(width: 560, height: 520)
@@ -37,6 +39,7 @@ struct ImportSheet: View {
 }
 
 private struct EpubImport: View {
+    let isActive: Bool
     let close: () -> Void
     @Environment(AppModel.self) private var model
     @State private var picking = false
@@ -77,6 +80,7 @@ private struct EpubImport: View {
                     Image(systemName: "book.pages").font(.system(size: 40)).foregroundStyle(.secondary)
                     Button("Choose EPUB…") { picking = true }
                         .controlSize(.large)
+                        .disabled(busy)
                     if busy { ProgressView().controlSize(.small) }
                 }
                 .frame(maxWidth: .infinity)
@@ -88,12 +92,14 @@ private struct EpubImport: View {
             HStack {
                 if preview != nil {
                     Button("Choose Another…") { picking = true }
+                        .disabled(busy)
                 }
                 Spacer()
                 if busy, preview != nil { ProgressView().controlSize(.small) }
-                Button("Cancel", action: close).keyboardShortcut(.cancelAction)
-                Button("Import") { Task { await importBook() } }
-                    .keyboardShortcut(.defaultAction)
+                Button("Cancel", action: close)
+                    .keyboardShortcut(isActive ? .cancelAction : nil)
+                Button("Import") { startImport() }
+                    .keyboardShortcut(isActive ? .defaultAction : nil)
                     .accessibilityIdentifier("confirm-import")
                     .disabled(preview == nil || busy || chosen.isEmpty)
             }
@@ -102,11 +108,11 @@ private struct EpubImport: View {
         .fileImporter(isPresented: $picking, allowedContentTypes: [UTType(filenameExtension: "epub") ?? .data]) {
             result in
             guard case .success(let url) = result else { return }
-            Task { await parse(url) }
+            startParse(url)
         }
         .dropDestination(for: URL.self) { urls, _ in
-            guard let url = urls.first(where: { $0.pathExtension.lowercased() == "epub" }) else { return false }
-            Task { await parse(url) }
+            guard !busy, let url = urls.first(where: { $0.pathExtension.lowercased() == "epub" }) else { return false }
+            startParse(url)
             return true
         }
     }
@@ -115,13 +121,17 @@ private struct EpubImport: View {
         chapters.indices.filter { chapters[$0].paragraphCount > 0 }
     }
 
+    private func startParse(_ url: URL) {
+        guard !busy else { return }
+        busy = true
+        error = nil
+        Task { await parse(url) }
+    }
+
     private func parse(_ url: URL) async {
         busy = true
         error = nil
         defer { busy = false }
-        // A file picked outside the app's container is readable only inside this scope (iOS).
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
             let parsed = try await model.library.parseEpub(at: url)
             language = model.config.suggestedSourceLanguage(for: parsed.language())
@@ -134,8 +144,13 @@ private struct EpubImport: View {
         }
     }
 
-    private func importBook() async {
-        guard let preview else { return }
+    private func startImport() {
+        guard !busy, let preview else { return }
+        busy = true
+        Task { await importBook(preview) }
+    }
+
+    private func importBook(_ preview: EpubPreview) async {
         busy = true
         defer { busy = false }
         do {
@@ -181,6 +196,7 @@ private struct ChapterChoice: View {
 }
 
 private struct TextImport: View {
+    let isActive: Bool
     let close: () -> Void
     @Environment(AppModel.self) private var model
     @State private var title = ""
@@ -207,15 +223,22 @@ private struct TextImport: View {
             }
             HStack {
                 Spacer()
-                Button("Cancel", action: close).keyboardShortcut(.cancelAction)
-                Button("Import") { Task { await importText() } }
-                    .keyboardShortcut(.defaultAction)
+                Button("Cancel", action: close)
+                    .keyboardShortcut(isActive ? .cancelAction : nil)
+                Button("Import") { startImport() }
+                    .keyboardShortcut(isActive ? .defaultAction : nil)
                     .accessibilityIdentifier("confirm-import")
                     .disabled(busy || title.trimmingCharacters(in: .whitespaces).isEmpty
                         || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding()
+    }
+
+    private func startImport() {
+        guard !busy else { return }
+        busy = true
+        Task { await importText() }
     }
 
     private func importText() async {

@@ -4,7 +4,7 @@ import SwiftUI
 struct LibraryPage: View {
     @Environment(AppModel.self) private var model
     @State private var selection: Set<UUID> = []
-    @State private var moving: [BookMeta] = []
+    @State private var moveRequest: MoveRequest?
     @State private var deleting: [BookMeta] = []
     /// The list takes the keyboard on arrival, so arrows and Return work at once.
     @FocusState private var listFocused: Bool
@@ -61,7 +61,7 @@ struct LibraryPage: View {
             content
         }
         .modifier(LibraryChrome(
-            moving: $moving, deleting: $deleting, selection: $selection))
+            moveRequest: $moveRequest, deleting: $deleting, selection: $selection))
         #if os(iOS)
         .environment(\.editMode, $editMode)
         #endif
@@ -103,7 +103,7 @@ struct LibraryPage: View {
                         if books.count == 1 { Button("Open") { open(books[0].id) } }
                         Divider()
                         Button(books.count == 1 ? "Move to Folder…" : "Move \(books.count) Books to Folder…") {
-                            moving = books
+                            moveRequest = MoveRequest(books: books)
                         }
                         Button(books.count == 1 ? "Delete…" : "Delete \(books.count) Books…", role: .destructive) {
                             deleting = books
@@ -129,7 +129,7 @@ struct LibraryPage: View {
                     if showsSelectionBar {
                         SelectionBar(
                             count: selectedBooks.count,
-                            move: { moving = selectedBooks },
+                            move: { moveRequest = MoveRequest(books: selectedBooks) },
                             delete: { deleting = selectedBooks },
                             clear: { selection = [] })
                     }
@@ -157,10 +157,15 @@ struct LibraryPage: View {
     }
 }
 
+private struct MoveRequest: Identifiable {
+    let id = UUID()
+    let books: [BookMeta]
+}
+
 /// The library page's title, toolbar, sheets and confirmations.
 private struct LibraryChrome: ViewModifier {
     @Environment(AppModel.self) private var model
-    @Binding var moving: [BookMeta]
+    @Binding var moveRequest: MoveRequest?
     @Binding var deleting: [BookMeta]
     @Binding var selection: Set<UUID>
 
@@ -168,8 +173,8 @@ private struct LibraryChrome: ViewModifier {
         content
             .navigationTitle("Library")
                 .toolbar { LibraryToolbarItems() }
-                .sheet(isPresented: Binding(get: { !moving.isEmpty }, set: { if !$0 { moving = [] } })) {
-                MoveBookSheet(books: moving)
+                .sheet(item: $moveRequest) { request in
+                MoveBookSheet(books: request.books)
             }
                 .confirmationDialog(
                 deleting.count == 1 ? "Delete “\(deleting[0].title)”?" : "Delete \(deleting.count) books?",

@@ -110,7 +110,8 @@ struct MainView: View {
             }
         }
         .alert(
-            "Something went wrong", isPresented: .constant(model.lastError != nil),
+            "Something went wrong",
+            isPresented: Binding(get: { model.lastError != nil }, set: { if !$0 { model.lastError = nil } }),
             actions: { Button("OK") { model.lastError = nil } },
             message: { Text(model.lastError ?? "") })
     }

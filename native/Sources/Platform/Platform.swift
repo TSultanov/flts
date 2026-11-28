@@ -45,13 +45,21 @@ enum Platform {
         #endif
     }
 
+    private static let ciContext = CIContext()
+    private static var qrCache: [String: Image] = [:]
+
     static func qrCode(_ payload: String, scale: CGFloat = 8) -> Image? {
+        let key = "\(scale):\(payload)"
+        if let cached = qrCache[key] { return cached }
         let filter = CIFilter.qrCodeGenerator()
         filter.message = Data(payload.utf8)
         filter.correctionLevel = "M"
         guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: scale, y: scale)),
-            let cg = CIContext().createCGImage(output, from: output.extent)
+            let cg = ciContext.createCGImage(output, from: output.extent)
         else { return nil }
-        return Image(decorative: cg, scale: 1)
+        let image = Image(decorative: cg, scale: 1)
+        if qrCache.count >= 16 { qrCache.removeAll(keepingCapacity: true) }
+        qrCache[key] = image
+        return image
     }
 }

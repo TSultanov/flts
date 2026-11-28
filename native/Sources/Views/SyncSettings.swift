@@ -98,15 +98,21 @@ struct SyncSettings: View {
                         HStack {
                             Spacer()
                             Button("Add Device") {
-                                guard let parsed = SyncStore.parsePairing(addId) else { return }
-                                let name = addName.isEmpty ? (parsed.name ?? "") : addName
+                                guard let parsed = SyncStore.parsePairing(addId) else {
+                                    sync.error = "Enter a valid device ID or pairing code."
+                                    return
+                                }
+                                let trimmedName = addName.trimmingCharacters(in: .whitespacesAndNewlines)
+                                let name = trimmedName.isEmpty ? (parsed.name ?? "") : trimmedName
                                 Task {
                                     await sync.add(deviceId: parsed.deviceId, name: name)
-                                    addId = ""
-                                    addName = ""
+                                    if sync.error == nil {
+                                        addId = ""
+                                        addName = ""
+                                    }
                                 }
                             }
-                            .disabled(addId.trimmingCharacters(in: .whitespaces).isEmpty)
+                            .disabled(addId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                     }
                 }

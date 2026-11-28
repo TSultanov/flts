@@ -22,29 +22,30 @@ struct SettingsView: View {
     #if os(macOS)
     private var content: some View {
         TabView(selection: $tab) {
-            Form { TranslationSettings() }
-                .formStyle(.grouped)
-                .tabItem { Label("Translation", systemImage: "character.bubble") }
-                .tag(SettingsTab.translation)
-            Form { ReadingSettings() }
-                .formStyle(.grouped)
-                .tabItem { Label("Reading", systemImage: "textformat.size") }
-                .tag(SettingsTab.reading)
-            SyncSettings()
-                .tabItem { Label("Sync", systemImage: "arrow.triangle.2.circlepath") }
-                .tag(SettingsTab.sync)
-            Form { AnkiSettings() }
-                .formStyle(.grouped)
-                .tabItem { Label("Anki", systemImage: "rectangle.stack") }
-                .tag(SettingsTab.anki)
-            Form { SpotifySettings() }
-                .formStyle(.grouped)
-                .tabItem { Label("Spotify", systemImage: "music.note") }
-                .tag(SettingsTab.spotify)
-            Form { StorageSettings() }
-                .formStyle(.grouped)
-                .tabItem { Label("Storage", systemImage: "internaldrive") }
-                .tag(SettingsTab.storage)
+            Tab("Translation", systemImage: "character.bubble", value: SettingsTab.translation) {
+                Form { TranslationSettings() }
+                    .formStyle(.grouped)
+            }
+            Tab("Reading", systemImage: "textformat.size", value: SettingsTab.reading) {
+                Form { ReadingSettings() }
+                    .formStyle(.grouped)
+            }
+            Tab("Sync", systemImage: "arrow.triangle.2.circlepath", value: SettingsTab.sync) {
+                SyncSettings()
+            }
+            Tab("Anki", systemImage: "rectangle.stack", value: SettingsTab.anki) {
+                Form { AnkiSettings() }
+                    .formStyle(.grouped)
+            }
+            Tab("Spotify", systemImage: "music.note", value: SettingsTab.spotify) {
+                Form { SpotifySettings() }
+                    .formStyle(.grouped)
+                    .task { await model.lyrics.refreshSpotifyStatus() }
+            }
+            Tab("Storage", systemImage: "internaldrive", value: SettingsTab.storage) {
+                Form { StorageSettings() }
+                    .formStyle(.grouped)
+            }
         }
         .frame(width: 580, height: 560)
     }
@@ -107,6 +108,7 @@ struct CommitField: View {
     @State private var draft = ""
     /// A secret shown in the clear, to check what was typed or pasted.
     @State private var revealed = false
+    @State private var togglingReveal = false
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -119,7 +121,15 @@ struct CommitField: View {
                         SecureField(title, text: $draft, prompt: prompt.map(Text.init))
                     }
                     Button {
+                        let wasFocused = focused
+                        if wasFocused { togglingReveal = true }
                         revealed.toggle()
+                        if wasFocused {
+                            DispatchQueue.main.async {
+                                focused = true
+                                togglingReveal = false
+                            }
+                        }
                     } label: {
                         Image(systemName: revealed ? "eye.slash" : "eye")
                     }
@@ -135,7 +145,7 @@ struct CommitField: View {
         .literalEntry(url: title.localizedCaseInsensitiveContains("address") || title.localizedCaseInsensitiveContains("endpoint"))
         .focused($focused)
         .onSubmit { save() }
-        .onChange(of: focused) { _, isFocused in if !isFocused { save() } }
+        .onChange(of: focused) { _, isFocused in if !isFocused, !togglingReveal { save() } }
         .onAppear { draft = value }
         .onChange(of: value) { _, new in if !focused { draft = new } }
         .onDisappear { save() }
@@ -329,6 +339,10 @@ private struct ModelPicker: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
         }
+        EmptyView()
+            .onChange(of: config.model, initial: true) { _, id in
+                family = ModelFamilies.family(of: id)
+            }
     }
 }
 
@@ -394,10 +408,12 @@ struct AnkiSettings: View {
                     title: "AnkiConnect address", value: config.ankiEndpoint ?? "",
                     prompt: Self.addressExample
                 ) { v in
-                    Task { await store.update { $0.ankiEndpoint = v.isEmpty ? nil : v } }
+                    let trimmed = v.trimmingCharacters(in: .whitespacesAndNewlines)
+                    Task { await store.update { $0.ankiEndpoint = trimmed.isEmpty ? nil : trimmed } }
                 }
                 CommitField(title: "AnkiConnect API key", value: config.ankiApiKey ?? "", secure: true) { v in
-                    Task { await store.update { $0.ankiApiKey = v.isEmpty ? nil : v } }
+                    let trimmed = v.trimmingCharacters(in: .whitespacesAndNewlines)
+                    Task { await store.update { $0.ankiApiKey = trimmed.isEmpty ? nil : trimmed } }
                 }
             } footer: {
                 Text(Self.explanation)
@@ -468,7 +484,8 @@ struct SpotifySettings: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 CommitField(title: "Client ID", value: config.spotifyClientId ?? "") { v in
-                    Task { await store.update { $0.spotifyClientId = v.isEmpty ? nil : v } }
+                    let trimmed = v.trimmingCharacters(in: .whitespacesAndNewlines)
+                    Task { await store.update { $0.spotifyClientId = trimmed.isEmpty ? nil : trimmed } }
                 }
                 HStack {
                     if lyrics.webStatus?.connected == true {
@@ -542,8 +559,6 @@ struct SpotifySettings: View {
                 Text("Last error: \(error)").foregroundStyle(.red).font(.callout)
             }
         }
-        Color.clear.frame(height: 0)
-            .task { await lyrics.refreshSpotifyStatus() }
     }
 
     private func run(_ key: String, _ action: @escaping () async -> Void) {
