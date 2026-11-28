@@ -199,13 +199,19 @@ internal fun SyncSettings(model: AppModel) {
                 )
                 Button(
                     onClick = {
-                        SyncStore.parsePairing(addId)?.let { (id, parsedName) ->
+                        val parsed = SyncStore.parsePairing(addId)
+                        if (parsed == null) {
+                            sync.error = "Enter a valid device ID or pairing code."
+                        } else {
+                            val (id, parsedName) = parsed
                             val name = addName.ifEmpty { parsedName ?: "" }
                             focus.clearFocus()
                             model.scope.launch {
                                 sync.add(id, name)
-                                addId = ""
-                                addName = ""
+                                if (sync.error == null) {
+                                    addId = ""
+                                    addName = ""
+                                }
                             }
                         }
                     },

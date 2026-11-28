@@ -3,9 +3,12 @@ package com.TS.FLTS.platform
 import com.TS.FLTS.ui.DialogSystemBars
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -25,6 +28,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -49,6 +53,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
@@ -85,19 +91,29 @@ fun qrCode(payload: String): ImageBitmap? = try {
 fun pairingScannerSupported(context: Context): Boolean =
     context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)
 
+private enum class ScannerState { Checking, Granted, Denied, CameraError }
+
 /// Scans another device's pairing QR code with the camera.
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PairingScanner(found: (String) -> Unit, onDismiss: () -> Unit) {
     val context = LocalContext.current
-    // null until the camera permission is known.
-    var allowed by remember { mutableStateOf<Boolean?>(null) }
-    val request = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { allowed = it }
+    var state by remember {
+        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        mutableStateOf(if (granted) ScannerState.Granted else ScannerState.Checking)
+    }
+    val request = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        state = if (granted) ScannerState.Granted else ScannerState.Denied
+    }
     LaunchedEffect(Unit) {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            allowed = true
-        } else {
-            request.launch(Manifest.permission.CAMERA)
+        if (state == ScannerState.Checking) request.launch(Manifest.permission.CAMERA)
+    }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        if (granted && (state == ScannerState.Checking || state == ScannerState.Denied)) {
+            state = ScannerState.Granted
+        } else if (!granted && state == ScannerState.Granted) {
+            state = ScannerState.Denied
         }
     }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
@@ -114,16 +130,23 @@ fun PairingScanner(found: (String) -> Unit, onDismiss: () -> Unit) {
             },
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                when (allowed) {
-                    null -> CircularProgressIndicator()
-                    true -> CameraScanner(
+                when (state) {
+                    ScannerState.Checking -> CircularProgressIndicator()
+                    ScannerState.Granted -> CameraScanner(
                         found = { code ->
                             found(code)
                             onDismiss()
                         },
-                        failed = { allowed = false },
+                        failed = { state = ScannerState.CameraError },
                     )
-                    false -> CameraUnavailable()
+                    ScannerState.Denied -> CameraUnavailable(
+                        denied = true,
+                        openSettings = {
+                            context.startActivity(
+                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)))
+                        },
+                    )
+                    ScannerState.CameraError -> CameraUnavailable(denied = false)
                 }
             }
         }
@@ -131,17 +154,21 @@ fun PairingScanner(found: (String) -> Unit, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun CameraUnavailable() {
+private fun CameraUnavailable(denied: Boolean, openSettings: (() -> Unit)? = null) {
     Column(
         Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Icon(Icons.Outlined.NoPhotography, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text("Camera Unavailable", style = MaterialTheme.typography.titleMedium)
+        Text(if (denied) "Camera Permission Required" else "Camera Unavailable", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Allow camera access for FLTS in Settings, or enter the device ID by hand.",
+            if (denied) "Allow camera access for FLTS in Settings, or enter the device ID by hand."
+            else "Could not start the camera. Enter the device ID by hand.",
             style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (denied && openSettings != null) {
+            OutlinedButton(onClick = openSettings) { Text("Open Settings") }
+        }
     }
 }
 
@@ -176,9 +203,14 @@ private fun CameraScanner(found: (String) -> Unit, failed: () -> Unit) {
                     provider = cameras
                     val preview = Preview.Builder().build()
                     preview.setSurfaceProvider(previewView.surfaceProvider)
-                    val selector =
-                        if (cameras.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)) CameraSelector.DEFAULT_BACK_CAMERA
-                        else CameraSelector.DEFAULT_FRONT_CAMERA
+                    val selector = when {
+                        cameras.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) -> CameraSelector.DEFAULT_BACK_CAMERA
+                        cameras.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) -> CameraSelector.DEFAULT_FRONT_CAMERA
+                        else -> {
+                            onFailed()
+                            return@addListener
+                        }
+                    }
                     cameras.unbindAll()
                     cameras.bindToLifecycle(owner, selector, preview, analysis)
                 } catch (e: Exception) {
