@@ -273,4 +273,43 @@ class StoreTests {
         assertFalse(store.loaded)
         store.close()
     }
+
+    @Test
+    fun deselectingClearsLoadingAndCrossWordCardCreationDoesNotBleed() = runTest {
+        val core = FakeCore()
+        val infoGate = CompletableDeferred<Unit>()
+        val cardGate = CompletableDeferred<Unit>()
+        val grammar = Grammar("ser", "be", "verb", null, null, null, null, null)
+        core.getWordInfoHandler = { _, _, _, w ->
+            if (w == 0) infoGate.await()
+            WordInfo("w$w", "", false, listOf("t"), grammar, "s", "m", "spa", canCreateCard = true, hasCard = false)
+        }
+        core.createCardForWordHandler = { _, _, _, _ ->
+            cardGate.await()
+            CardResult.CREATED
+        }
+        val store = WordStore(core, EventHub(), this)
+        store.select(WordRef(id, 0, 0, 0, 0), "uno")
+        kotlinx.coroutines.yield()
+        assertTrue(store.loading)
+        store.select(null, null)
+        assertFalse(store.loading)
+        infoGate.complete(Unit)
+        advanceUntilIdle()
+        assertFalse(store.loading)
+        assertNull(store.info)
+
+        store.select(WordRef(id, 0, 0, 1, 1), "dos")
+        advanceUntilIdle()
+        val cardJob = launch { store.createCard() }
+        kotlinx.coroutines.yield()
+        assertEquals(WordStore.CardState.Creating, store.cardState)
+        store.select(WordRef(id, 0, 0, 2, 2), "tres")
+        advanceUntilIdle()
+        assertEquals(WordStore.CardState.Idle, store.cardState)
+        cardGate.complete(Unit)
+        cardJob.join()
+        assertEquals(WordStore.CardState.Idle, store.cardState)
+        store.close()
+    }
 }

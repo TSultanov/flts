@@ -57,17 +57,25 @@ class WordStore(private val core: CoreService, private val events: EventHub, pri
         if (ref == selection) return
         selection = ref
         this.surface = surface
+        cardState = CardState.Idle
         // Going to another word keeps the last one until the new one loads,
         // so open details do not collapse and reopen in between.
-        if (ref == null) info = null
-        cardState = CardState.Idle
+        if (ref == null) {
+            generation += 1
+            info = null
+            loading = false
+            return
+        }
         scope.launch { reload() }
     }
 
     suspend fun reload() {
         generation += 1
         val gen = generation
-        val ref = selection ?: return
+        val ref = selection ?: run {
+            loading = false
+            return
+        }
         loading = true
         try {
             val fetched = core.getWordInfo(ref.bookId, ref.paragraphId, ref.sentence, ref.word)
@@ -87,9 +95,11 @@ class WordStore(private val core: CoreService, private val events: EventHub, pri
 
     suspend fun createCard() {
         val ref = selection ?: return
+        if (cardState == CardState.Creating) return
         cardState = CardState.Creating
         try {
             val result = core.createCardForWord(ref.bookId, ref.paragraphId, ref.sentence, ref.word)
+            if (selection != ref) return
             if (result == CardResult.ALREADY_EXISTS) {
                 cardState = CardState.Exists
             } else {
@@ -103,7 +113,7 @@ class WordStore(private val core: CoreService, private val events: EventHub, pri
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            cardState = CardState.Failed(e.userMessage)
+            if (selection == ref) cardState = CardState.Failed(e.userMessage)
         }
     }
 }
