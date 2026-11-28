@@ -237,6 +237,14 @@ class ReaderView(context: Context) : View(context) {
         sizeChanged()
     }
 
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        endSlide()
+        main.removeCallbacksAndMessages(null)
+        drainScheduled = false
+        generation += 1
+    }
+
     private fun sizeChanged() {
         updateMargins()
         if (width != laidOutWidth || height != laidOutHeight) {

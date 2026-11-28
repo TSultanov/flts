@@ -370,4 +370,26 @@ class ReaderViewTests {
         assertEquals(2 to true, recorder.translated)
         assertNotNull(view.pageLabel)
     }
+
+    @Test
+    fun detachingCancelsPendingFullLayout() {
+        val activity = org.robolectric.Robolectric.buildActivity(android.app.Activity::class.java).setup().get()
+        val container = android.widget.FrameLayout(activity)
+        activity.setContentView(container)
+        val view = ReaderView(activity)
+        var fullLayoutCallbacks = 0
+        view.onFullLayout = { fullLayoutCallbacks += 1 }
+        view.setContent(chapter().keys.sorted(), chapter(), ReadingAnchor(80, 0))
+        container.addView(view, 1100, 760)
+        view.layout(0, 0, 1100, 760)
+        assertTrue(view.isProvisional)
+        assertEquals(0, view.fullLayoutsStarted)
+
+        container.removeView(view)
+        Thread.sleep(200)
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(300))
+
+        assertEquals(0, view.fullLayoutsStarted)
+        assertEquals(0, fullLayoutCallbacks)
+    }
 }

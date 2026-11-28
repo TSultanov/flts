@@ -83,8 +83,10 @@ private class ReaderCoordinator(
     private var applied = false
     private var revision = -1
     private var saveJob: Job? = null
+    private var disposed = false
 
     fun update(view: ReaderView, typography: ReaderTypography, colors: ReaderColors, marginScale: Float) {
+        if (disposed) return
         this.view = view
         controls.view = view
         view.setStyle(typography, colors)
@@ -122,6 +124,7 @@ private class ReaderCoordinator(
     }
 
     override fun selected(paragraphId: Int, wordIndex: Int) {
+        if (disposed) return
         val p = view?.contentParagraph(paragraphId) ?: return
         val w = p.words.getOrNull(wordIndex) ?: return
         val end = (w.start + w.len).coerceAtMost(p.text.length)
@@ -131,6 +134,7 @@ private class ReaderCoordinator(
     }
 
     override fun translate(paragraphId: Int, useCache: Boolean) {
+        if (disposed) return
         // Every way to translate waits for the chapter's summaries; a
         // retranslation (useCache false on a translated paragraph) does not.
         val translated = view?.contentParagraph(paragraphId)?.translated ?: false
@@ -139,6 +143,7 @@ private class ReaderCoordinator(
     }
 
     override fun movedTo(page: Int, count: Int) {
+        if (disposed) return
         controls.page = page
         controls.pageCount = count
         val view = view ?: return
@@ -164,6 +169,17 @@ private class ReaderCoordinator(
         val state = BookReadingState(chapter.chapterId, anchor.paragraphId, anchor.pageOffset)
         anchor.line?.let { LocalPosition(state, it).save(book.bookId) }
         book.save(chapter.chapterId, anchor.paragraphId, anchor.pageOffset)
+    }
+
+    fun dispose() {
+        if (disposed) return
+        flush()
+        disposed = true
+        saveJob?.cancel()
+        saveJob = null
+        if (controls.view === view) controls.view = null
+        view?.listener = null
+        view = null
     }
 
     override fun translationProgress(paragraphId: Int): Double? {
@@ -192,7 +208,9 @@ private class ReaderCoordinator(
 
     override fun canTranslate(): Boolean = book.canTranslate(chapter.chapterId)
 
-    override fun deselected() = word.select(null, null)
+    override fun deselected() {
+        if (!disposed) word.select(null, null)
+    }
 }
 
 @Composable
@@ -242,9 +260,6 @@ fun ReaderHost(
         },
     )
     DisposableEffect(coordinator) {
-        onDispose {
-            coordinator.flush()
-            if (controls.view === coordinator.view) controls.view = null
-        }
+        onDispose { coordinator.dispose() }
     }
 }
