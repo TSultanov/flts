@@ -32,4 +32,8 @@ object FilePicker {
             throw e
         }
     }
+
+    suspend fun clearImportCache(context: Context) = withContext(Dispatchers.IO) {
+        importDir(context).listFiles()?.forEach { it.delete() }
+    }
 }

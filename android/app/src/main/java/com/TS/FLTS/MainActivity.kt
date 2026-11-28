@@ -6,8 +6,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import com.TS.FLTS.core.AppPrefs
+import com.TS.FLTS.platform.FilePicker
 import com.TS.FLTS.ui.FltsTheme
 import com.TS.FLTS.ui.RootScreen
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -18,6 +20,7 @@ class MainActivity : ComponentActivity() {
             applyTestEnvironment()
             AppPrefs.init(this)
             model.start(this)
+            model.scope.launch { FilePicker.clearImportCache(applicationContext) }
         }
         setContent {
             FltsTheme {

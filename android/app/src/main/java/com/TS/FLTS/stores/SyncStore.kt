@@ -80,6 +80,7 @@ class SyncStore(private val events: EventHub, private val scope: CoroutineScope)
 
     private suspend fun run(action: suspend (CoreService) -> Unit) {
         val core = core ?: return
+        if (busy) return
         busy = true
         try {
             action(core)

@@ -167,10 +167,11 @@ private class EpubImportState(
     fun load(path: String) = parse(owned = false) { File(path) }
 
     private fun parse(owned: Boolean, file: suspend () -> File) {
+        if (busy || importing) return
+        busy = true
+        error = null
         // Jobs outlive the sheet (as an import must); `released` hands them the cleanup.
         model.scope.launch {
-            busy = true
-            error = null
             var mine: File? = null
             try {
                 val source = file()
@@ -207,10 +208,10 @@ private class EpubImportState(
 
     fun importBook() {
         val preview = preview ?: return
-        if (importing) return
+        if (busy || importing) return
         importing = true
+        busy = true
         model.scope.launch {
-            busy = true
             try {
                 model.library.importEpub(preview, language, chosen.sorted())
                 // As in the web app: back to the library, where the book now is.
@@ -290,7 +291,7 @@ private fun EpubImport(model: AppModel, state: EpubImportState) {
                     Icons.AutoMirrored.Filled.MenuBook, contentDescription = null,
                     modifier = Modifier.size(40.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                FilledTonalButton(onClick = pickFile, modifier = Modifier.testTag("import.pickFile")) {
+                FilledTonalButton(onClick = pickFile, enabled = !state.busy, modifier = Modifier.testTag("import.pickFile")) {
                     Text("Choose EPUB…")
                 }
                 if (state.busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
@@ -299,7 +300,7 @@ private fun EpubImport(model: AppModel, state: EpubImportState) {
         state.error?.let { ErrorText(it) }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             if (preview != null) {
-                OutlinedButton(onClick = pickFile, modifier = Modifier.testTag("import.pickFile")) {
+                OutlinedButton(onClick = pickFile, enabled = !state.busy, modifier = Modifier.testTag("import.pickFile")) {
                     Text("Choose Another…")
                 }
             }
@@ -377,8 +378,10 @@ private class TextImportState(private val model: AppModel, private val close: ()
     var released = false
 
     fun importText() {
+        if (busy) return
+        busy = true
+        error = null
         model.scope.launch {
-            busy = true
             try {
                 model.library.importText(title.trim(), text, language)
                 model.selectedBookId = null
