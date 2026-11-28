@@ -5,8 +5,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.TS.FLTS.core.CoreService
 import com.TS.FLTS.core.EventHub
+import com.TS.FLTS.core.runCatchingCancellable
 import com.TS.FLTS.core.userMessage
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -66,7 +68,7 @@ class BookStore(
 
     suspend fun load() {
         loadChapters()
-        readingState = runCatching { core.getBookReadingState(bookId) }.getOrNull()
+        readingState = runCatchingCancellable { core.getBookReadingState(bookId) }.getOrNull()
         if (currentChapter == null) {
             currentChapter = readingState?.chapterId ?: chapters.firstOrNull()?.id
         }
@@ -77,13 +79,15 @@ class BookStore(
     suspend fun loadChapters() {
         try {
             chapters = core.listBookChapters(bookId)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             error = e.userMessage
         }
     }
 
     suspend fun loadSummary() {
-        summary = runCatching { core.getBookSummaryStatus(bookId) }.getOrNull()
+        summary = runCatchingCancellable { core.getBookSummaryStatus(bookId) }.getOrNull()
     }
 
     /// As in the web app: a chapter translates once the previous chapter's
@@ -99,12 +103,14 @@ class BookStore(
         if (state == readingState) return
         readingState = state
         positions = positions + (chapterId to state)
-        scope.launch { runCatching { core.saveBookReadingState(bookId, state) } }
+        scope.launch { runCatchingCancellable { core.saveBookReadingState(bookId, state) } }
     }
 
     suspend fun translateChapter(chapterId: Int, model: String) {
         try {
             core.translateChapter(bookId, chapterId, model, true)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             error = e.userMessage
         }

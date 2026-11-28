@@ -7,6 +7,7 @@ import com.TS.FLTS.core.CoreService
 import com.TS.FLTS.core.EventHub
 import com.TS.FLTS.core.WordRef
 import com.TS.FLTS.core.userMessage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -73,6 +74,8 @@ class WordStore(private val core: CoreService, private val events: EventHub, pri
             if (gen != generation) return
             info = fetched
             if (fetched != null && fetched.hasCard && cardState == CardState.Idle) cardState = CardState.Exists
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             if (gen != generation) return
             info = null
@@ -97,6 +100,8 @@ class WordStore(private val core: CoreService, private val events: EventHub, pri
                     if (selection == ref && cardState == CardState.Created) cardState = CardState.Exists
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             cardState = CardState.Failed(e.userMessage)
         }

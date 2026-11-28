@@ -12,7 +12,10 @@ import com.TS.FLTS.stores.TranslationActivityStore
 import com.TS.FLTS.stores.WordStore
 import com.TS.FLTS.core.WordRef
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -241,6 +244,33 @@ class StoreTests {
         store.select(null, null)
         assertNull(store.info)
         advanceUntilIdle()
+        store.close()
+    }
+
+    @Test
+    fun cancellingChapterLoadRethrowsWithoutSettingError() = runTest {
+        val core = FakeCore()
+        val gate = CompletableDeferred<Unit>()
+        var cancelled = false
+        core.getBookChapterParagraphIdsHandler = { _, _ ->
+            gate.await()
+            emptyList()
+        }
+        val store = ChapterStore(id, 0, core, EventHub(), this)
+        val job = launch {
+            try {
+                store.load()
+            } catch (e: CancellationException) {
+                cancelled = true
+                throw e
+            }
+        }
+        advanceUntilIdle()
+        job.cancel()
+        advanceUntilIdle()
+        assertTrue(cancelled)
+        assertNull(store.error)
+        assertFalse(store.loaded)
         store.close()
     }
 }

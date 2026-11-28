@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.TS.FLTS.core.CoreService
 import com.TS.FLTS.core.EventHub
+import com.TS.FLTS.core.runCatchingCancellable
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -69,7 +70,7 @@ class TranslationActivityStore(private val events: EventHub, private val scope: 
         val core = core ?: return
         reconcileToken += 1
         val token = reconcileToken
-        val rows = runCatching { core.listTranslationActivity() }.getOrNull() ?: return
+        val rows = runCatchingCancellable { core.listTranslationActivity() }.getOrNull() ?: return
         if (token != reconcileToken) return
         entries = rows.associate {
             Key(it.bookId, it.paragraphId) to TranslationActivity(it.requestId, it.progressChars, it.expectedChars)

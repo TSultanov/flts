@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import uniffi.flts_ffi.CoreEvent
 import uniffi.flts_ffi.CoreException
 import uniffi.flts_ffi.FltsCore
@@ -50,4 +51,13 @@ val Throwable.userMessage: String
 
 fun logError(message: String) {
     runCatching { Log.e(LOG_TAG, message) }
+}
+
+/// Like `runCatching`, but rethrows `CancellationException` so structured concurrency works.
+inline fun <T> runCatchingCancellable(block: () -> T): Result<T> = try {
+    Result.success(block())
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Throwable) {
+    Result.failure(e)
 }

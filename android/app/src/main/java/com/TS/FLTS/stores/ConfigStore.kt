@@ -6,7 +6,9 @@ import androidx.compose.runtime.setValue
 import com.TS.FLTS.core.CoreService
 import com.TS.FLTS.core.EventHub
 import com.TS.FLTS.core.hasApiKeyForProvider
+import com.TS.FLTS.core.runCatchingCancellable
 import com.TS.FLTS.core.userMessage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import uniffi.flts_ffi.AppConfig
@@ -49,6 +51,8 @@ class ConfigStore(private val events: EventHub, private val scope: CoroutineScop
             config = core.getConfig()
             loaded = true
             loadModels()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             error = e.userMessage
             loaded = true
@@ -58,8 +62,11 @@ class ConfigStore(private val events: EventHub, private val scope: CoroutineScop
     suspend fun loadModels() {
         val core = core ?: return
         modelsLoading = true
-        models = runCatching { core.getModels() }.getOrDefault(emptyList())
-        modelsLoading = false
+        try {
+            models = runCatchingCancellable { core.getModels() }.getOrDefault(emptyList())
+        } finally {
+            modelsLoading = false
+        }
     }
 
     /// Onboarding is done once a target language and the provider's key are set.
@@ -82,6 +89,9 @@ class ConfigStore(private val events: EventHub, private val scope: CoroutineScop
         config = next
         try {
             core.updateConfig(next)
+        } catch (e: CancellationException) {
+            config = previous
+            throw e
         } catch (e: Exception) {
             config = previous
             error = e.userMessage

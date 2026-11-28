@@ -105,11 +105,13 @@ import androidx.compose.ui.window.DialogProperties
 import com.TS.FLTS.core.apiKey
 import com.TS.FLTS.core.hasApiKeyForProvider
 import com.TS.FLTS.core.label
+import com.TS.FLTS.core.runCatchingCancellable
 import com.TS.FLTS.core.userMessage
 import com.TS.FLTS.core.withApiKey
 import com.TS.FLTS.stores.AppModel
 import java.text.Collator
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import uniffi.flts_ffi.AnkiSyncState
 import uniffi.flts_ffi.AppConfig
@@ -476,13 +478,16 @@ private fun PurgeCachesRow(model: AppModel, hasKey: Boolean) {
             onClick = {
                 busy = true
                 model.scope.launch {
-                    result = try {
+                    try {
                         val n = model.config.purgeGeminiCaches()
-                        if (n == 1) "Removed 1 cached item." else "Removed $n cached items."
+                        result = if (n == 1) "Removed 1 cached item." else "Removed $n cached items."
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
-                        e.userMessage
+                        result = e.userMessage
+                    } finally {
+                        busy = false
                     }
-                    busy = false
                 }
             },
             enabled = !busy && hasKey,
@@ -670,7 +675,7 @@ private fun AnkiStatusRow(model: AppModel) {
 @Composable
 private fun StorageSettings(model: AppModel) {
     var root by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(model.core) { root = runCatching { model.core?.getLibraryRoot() }.getOrNull() }
+    LaunchedEffect(model.core) { root = runCatchingCancellable { model.core?.getLibraryRoot() }.getOrNull() }
     SettingsSection("Library") {
         Text("Location")
         HorizontalDivider()

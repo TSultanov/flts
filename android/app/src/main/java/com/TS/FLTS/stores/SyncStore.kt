@@ -6,8 +6,10 @@ import androidx.compose.runtime.setValue
 import com.TS.FLTS.core.CoreService
 import com.TS.FLTS.core.EventHub
 import com.TS.FLTS.core.ankiIdle
+import com.TS.FLTS.core.runCatchingCancellable
 import com.TS.FLTS.core.syncDisabled
 import com.TS.FLTS.core.userMessage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -46,20 +48,20 @@ class SyncStore(private val events: EventHub, private val scope: CoroutineScope)
 
     suspend fun refresh() {
         val core = core ?: return
-        runCatching { core.getSyncStatus() }.getOrNull()?.let { status = it }
+        runCatchingCancellable { core.getSyncStatus() }.getOrNull()?.let { status = it }
     }
 
     /// Device lists only matter while the sync settings are on screen.
     suspend fun refreshDevices() {
         val core = core ?: return
-        thisDevice = runCatching { core.syncThisDevice() }.getOrNull()
-        devices = runCatching { core.syncListDevices() }.getOrDefault(emptyList())
-        pending = runCatching { core.syncListPending() }.getOrDefault(emptyList())
+        thisDevice = runCatchingCancellable { core.syncThisDevice() }.getOrNull()
+        devices = runCatchingCancellable { core.syncListDevices() }.getOrDefault(emptyList())
+        pending = runCatchingCancellable { core.syncListPending() }.getOrDefault(emptyList())
     }
 
     fun wake() {
         val core = core ?: return
-        scope.launch { runCatching { core.syncWake() } }
+        scope.launch { runCatchingCancellable { core.syncWake() } }
     }
 
     suspend fun setEnabled(enabled: Boolean) = run { it.syncSetEnabled(enabled) }
@@ -74,7 +76,7 @@ class SyncStore(private val events: EventHub, private val scope: CoroutineScope)
 
     suspend fun keepIdentity() = run { it.syncKeepIdentity() }
 
-    suspend fun webUiUrl(): String? = core?.let { core -> runCatching { core.syncWebUiUrl() }.getOrNull() }
+    suspend fun webUiUrl(): String? = core?.let { core -> runCatchingCancellable { core.syncWebUiUrl() }.getOrNull() }
 
     private suspend fun run(action: suspend (CoreService) -> Unit) {
         val core = core ?: return
@@ -82,10 +84,13 @@ class SyncStore(private val events: EventHub, private val scope: CoroutineScope)
         try {
             action(core)
             error = null
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             error = e.userMessage
+        } finally {
+            busy = false
         }
-        busy = false
         refresh()
         refreshDevices()
     }
@@ -130,7 +135,7 @@ class AnkiStore(private val events: EventHub, private val scope: CoroutineScope)
 
     suspend fun refresh() {
         val core = core ?: return
-        val status = runCatching { core.getAnkiSyncStatus() }.getOrNull() ?: return
+        val status = runCatchingCancellable { core.getAnkiSyncStatus() }.getOrNull() ?: return
         this.status = status
         when (status.state) {
             AnkiSyncState.UNREACHABLE -> reachable = false
@@ -145,6 +150,8 @@ class AnkiStore(private val events: EventHub, private val scope: CoroutineScope)
         try {
             core.syncAnkiNow()
             error = null
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             error = e.userMessage
         }

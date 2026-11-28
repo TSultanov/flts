@@ -8,6 +8,7 @@ import com.TS.FLTS.core.EventHub
 import com.TS.FLTS.core.userMessage
 import java.text.Collator
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -101,6 +102,8 @@ class LibraryStore(private val events: EventHub, private val scope: CoroutineSco
             books = listed
             tree = LibraryFolder.build(listed)
             loaded = true
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             error = e.userMessage
         }
@@ -113,6 +116,8 @@ class LibraryStore(private val events: EventHub, private val scope: CoroutineSco
         for (id in ids) {
             try {
                 core.deleteBook(id)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 error = e.userMessage
             }
@@ -125,6 +130,8 @@ class LibraryStore(private val events: EventHub, private val scope: CoroutineSco
         for (id in ids) {
             try {
                 core.moveBook(id, path)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 error = e.userMessage
             }

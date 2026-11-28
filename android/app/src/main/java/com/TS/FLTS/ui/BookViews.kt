@@ -63,6 +63,7 @@ import com.TS.FLTS.stores.AppModel
 import com.TS.FLTS.stores.BookSession
 import java.util.UUID
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import uniffi.flts_ffi.ChapterMeta
 
@@ -194,7 +195,7 @@ fun BookPage(model: AppModel, bookId: UUID) {
                 enter = slideInHorizontally(tween(if (AppPrefs.animationsOff) 0 else 180)) { -it },
                 exit = slideOutHorizontally(tween(if (AppPrefs.animationsOff) 0 else 180)) { -it },
             ) {
-                ChaptersPanel(session, close = { chaptersShown = false })
+                ChaptersPanel(session, model.scope, close = { chaptersShown = false })
             }
         }
     }
@@ -202,13 +203,13 @@ fun BookPage(model: AppModel, bookId: UUID) {
 
 /// The chapter list over the reader's left edge; a tap beside it closes it.
 @Composable
-private fun ChaptersPanel(session: BookSession, close: () -> Unit) {
+private fun ChaptersPanel(session: BookSession, scope: CoroutineScope, close: () -> Unit) {
     Row(Modifier.fillMaxSize()) {
         Surface(
             modifier = Modifier.width(280.dp).fillMaxHeight().shadow(8.dp),
             color = MaterialTheme.colorScheme.surfaceContainer,
         ) {
-            ChaptersList(session, close)
+            ChaptersList(session, scope, close)
         }
         Box(
             Modifier.fillMaxSize().clickable(
@@ -217,9 +218,8 @@ private fun ChaptersPanel(session: BookSession, close: () -> Unit) {
 }
 
 @Composable
-private fun ChaptersList(session: BookSession, close: () -> Unit) {
+private fun ChaptersList(session: BookSession, scope: CoroutineScope, close: () -> Unit) {
     val book = session.book
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
     val listState = rememberLazyListState()
     // A long book opens its list at the chapter being read.
     LaunchedEffect(Unit) {

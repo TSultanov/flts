@@ -6,8 +6,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.TS.FLTS.core.CoreService
 import com.TS.FLTS.core.EventHub
+import com.TS.FLTS.core.runCatchingCancellable
 import com.TS.FLTS.core.userMessage
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
@@ -74,6 +76,8 @@ class ChapterStore(
             loaded = true
             changedIds = null
             revision += 1
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             error = e.userMessage
             loaded = true
@@ -81,7 +85,7 @@ class ChapterStore(
     }
 
     private suspend fun reloadIds() {
-        val ids = runCatching { core.getBookChapterParagraphIds(bookId, chapterId) }.getOrNull() ?: return
+        val ids = runCatchingCancellable { core.getBookChapterParagraphIds(bookId, chapterId) }.getOrNull() ?: return
         // Same ids: text changes arrive as `paragraph_updated`, and the queue
         // emits `book_updated` on every save, so refetching here would storm.
         if (ids != paragraphIds) load()
@@ -112,7 +116,7 @@ class ChapterStore(
             val batch = pending.toList()
             pending.clear()
             val started = batch.associateWith { epochs[it] ?: 0 }
-            val fetched = runCatching { fetch(batch) }.getOrNull() ?: return@launch
+            val fetched = runCatchingCancellable { fetch(batch) }.getOrNull() ?: return@launch
             val changed = HashSet<Int>()
             val next = paragraphs.toMutableMap()
             for (p in fetched) {
@@ -132,6 +136,8 @@ class ChapterStore(
     suspend fun translate(paragraphId: Int, model: String, useCache: Boolean = true) {
         try {
             core.translateParagraph(bookId, paragraphId, model, useCache)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             error = e.userMessage
         }

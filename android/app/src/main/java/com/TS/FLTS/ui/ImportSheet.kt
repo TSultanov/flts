@@ -70,6 +70,7 @@ import com.TS.FLTS.core.userMessage
 import com.TS.FLTS.platform.FilePicker
 import com.TS.FLTS.stores.AppModel
 import java.io.File
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import uniffi.flts_ffi.EpubChapterSummary
 import uniffi.flts_ffi.EpubPreview
@@ -191,6 +192,9 @@ private class EpubImportState(
                 copy = mine
                 previous?.close()
                 previousCopy?.delete()
+            } catch (e: CancellationException) {
+                mine?.delete()
+                throw e
             } catch (e: Exception) {
                 mine?.delete()
                 logError("EPUB parse failed: ${e.userMessage}")
@@ -212,6 +216,8 @@ private class EpubImportState(
                 // As in the web app: back to the library, where the book now is.
                 model.selectedBookId = null
                 if (!released) close()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 error = e.userMessage
             } finally {
@@ -377,6 +383,8 @@ private class TextImportState(private val model: AppModel, private val close: ()
                 model.library.importText(title.trim(), text, language)
                 model.selectedBookId = null
                 if (!released) close()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 error = e.userMessage
             } finally {
