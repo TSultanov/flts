@@ -12,6 +12,7 @@ lower = "Int64({})"
 [bindings.kotlin]
 package_name = "uniffi.flts_ffi"
 cdylib_name = "flts_ffi"
+android = true
 
 [bindings.kotlin.custom_types.Uuid]
 type_name = "UUID"
