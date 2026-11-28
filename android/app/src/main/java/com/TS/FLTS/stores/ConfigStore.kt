@@ -11,6 +11,8 @@ import com.TS.FLTS.core.userMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import uniffi.flts_ffi.AppConfig
 import uniffi.flts_ffi.CoreEvent
 import uniffi.flts_ffi.LanguageInfo
@@ -34,6 +36,7 @@ class ConfigStore(private val events: EventHub, private val scope: CoroutineScop
     var error by mutableStateOf<String?>(null)
 
     private var core: CoreService? = null
+    private val updateMutex = Mutex()
 
     override fun attach(core: CoreService) {
         this.core = core
@@ -81,11 +84,11 @@ class ConfigStore(private val events: EventHub, private val scope: CoroutineScop
     fun models(provider: TranslationProvider): List<ModelInfo> =
         models.filter { it.provider == null || it.provider == provider }
 
-    suspend fun update(change: (AppConfig) -> AppConfig) {
-        val core = core ?: return
-        val previous = config ?: return
+    suspend fun update(change: (AppConfig) -> AppConfig) = updateMutex.withLock {
+        val core = core ?: return@withLock
+        val previous = config ?: return@withLock
         val next = change(previous)
-        if (next == previous) return
+        if (next == previous) return@withLock
         config = next
         try {
             core.updateConfig(next)

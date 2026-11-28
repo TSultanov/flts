@@ -523,7 +523,8 @@ private fun ModelPicker(model: AppModel, config: AppConfig) {
     val byFamily = config.translationProvider == TranslationProvider.OPENROUTER ||
         store.provider(config.translationProvider)?.modelSelection == "family"
     val orphan = models.isNotEmpty() && models.none { it.id == config.model }
-    var family by remember { mutableStateOf("") }
+    var family by remember(config.translationProvider) { mutableStateOf(ModelFamilies.family(config.model)) }
+    LaunchedEffect(config.model) { family = ModelFamilies.family(config.model) }
     if (byFamily && models.isNotEmpty()) {
         val families = remember(models) { ModelFamilies.families(models) }
         SettingsPicker(
@@ -634,11 +635,11 @@ private fun AnkiSettings(model: AppModel) {
         CommitField(
             title = "AnkiConnect address", value = config.ankiEndpoint ?: "", url = true,
             prompt = "http://192.168.1.10:8765", modifier = Modifier.testTag("settings.ankiEndpoint"),
-        ) { v -> model.scope.launch { store.update { it.copy(ankiEndpoint = v.ifEmpty { null }) } } }
+        ) { v -> model.scope.launch { store.update { it.copy(ankiEndpoint = v.trim().ifEmpty { null }) } } }
         CommitField(
             title = "AnkiConnect API key", value = config.ankiApiKey ?: "", secure = true,
             modifier = Modifier.testTag("settings.ankiApiKey"),
-        ) { v -> model.scope.launch { store.update { it.copy(ankiApiKey = v.ifEmpty { null }) } } }
+        ) { v -> model.scope.launch { store.update { it.copy(ankiApiKey = v.trim().ifEmpty { null }) } } }
     }
     SettingsSection("Status") { AnkiStatusRow(model) }
 }

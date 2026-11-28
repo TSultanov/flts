@@ -312,4 +312,38 @@ class StoreTests {
         assertEquals(WordStore.CardState.Idle, store.cardState)
         store.close()
     }
+
+    @Test
+    fun concurrentConfigUpdatesSerializeWithoutClobbering() = runTest {
+        val core = fakeAppCore()
+        var current = config(null)
+        val firstStarted = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        core.getConfigHandler = { current }
+        core.getModelsHandler = { emptyList() }
+        core.updateConfigHandler = { next ->
+            if (next.geminiApiKey == "k" && next.translationConcurrency == 1) {
+                firstStarted.complete(Unit)
+                releaseFirst.await()
+            }
+            current = next
+        }
+        val store = ConfigStore(EventHub(), this)
+        store.attach(core)
+        advanceUntilIdle()
+
+        val first = launch { store.update { it.copy(geminiApiKey = "k") } }
+        firstStarted.await()
+        val second = launch { store.update { it.copy(translationConcurrency = 4) } }
+        kotlinx.coroutines.yield()
+        assertEquals(1, store.config?.translationConcurrency)
+
+        releaseFirst.complete(Unit)
+        first.join()
+        second.join()
+        assertEquals("k", store.config?.geminiApiKey)
+        assertEquals(4, store.config?.translationConcurrency)
+        assertEquals("k", current.geminiApiKey)
+        assertEquals(4, current.translationConcurrency)
+    }
 }
