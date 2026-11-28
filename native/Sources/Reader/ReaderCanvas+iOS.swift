@@ -82,7 +82,10 @@ extension ReaderCanvas: @preconcurrency UIEditMenuInteractionDelegate {
 
     @objc private func tapped(_ gesture: UITapGestureRecognizer) {
         takeKeys()
-        let point = gesture.location(in: self)
+        handleTap(at: gesture.location(in: self))
+    }
+
+    func handleTap(at point: CGPoint) {
         if activateControl(at: point, fresh: false) { return }
         // A finger is not a pointer: a tap just beside a word still means the word.
         if let word = nearestWord(to: point) {
