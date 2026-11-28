@@ -19,6 +19,8 @@ final class BookStore {
     private let events: EventHub
     private var tokens: [EventHub.Token] = []
     private var chaptersReloadScheduled = false
+    private var chaptersReloadTask: Task<Void, Never>?
+    private var summaryTask: Task<Void, Never>?
 
     init(bookId: UUID, core: any CoreService, events: EventHub) {
         self.bookId = bookId
@@ -30,13 +32,15 @@ final class BookStore {
                 switch event {
                 case .bookUpdated(let id) where id == bookId && !chaptersReloadScheduled:
                     chaptersReloadScheduled = true
-                    Task {
+                    chaptersReloadTask = Task {
                         try? await Task.sleep(for: .milliseconds(300))
+                        guard !Task.isCancelled else { return }
                         self.chaptersReloadScheduled = false
                         await self.loadChapters()
                     }
                 case .summaryGenerationProgress(let e) where e.bookId == bookId:
-                    Task { await self.loadSummary() }
+                    summaryTask?.cancel()
+                    summaryTask = Task { await self.loadSummary() }
                 default: break
                 }
             })
@@ -45,6 +49,11 @@ final class BookStore {
     func close() {
         events.cancel(tokens)
         tokens = []
+        chaptersReloadTask?.cancel()
+        chaptersReloadTask = nil
+        summaryTask?.cancel()
+        summaryTask = nil
+        chaptersReloadScheduled = false
     }
 
     func load() async {

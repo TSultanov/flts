@@ -50,10 +50,30 @@ final class AppModel {
         attach(core)
     }
 
+    private var starting = false
+
+    /// Synchronous startup used by in-process smoke tests.
     func start() {
-        guard case .starting = phase, core == nil else { return }
+        guard case .starting = phase, core == nil, !starting else { return }
         do {
             attach(try CoreClient.start(events: events))
+        } catch {
+            phase = .failed(error.userMessage)
+        }
+    }
+
+    /// Launches the Rust core off the main actor so startup does not hitch UI.
+    func startAsync() async {
+        guard case .starting = phase, core == nil, !starting else { return }
+        starting = true
+        defer { starting = false }
+        let events = self.events
+        do {
+            let started = try await Task.detached(priority: .userInitiated) {
+                try CoreClient.start(events: events)
+            }.value
+            guard case .starting = phase, core == nil else { return }
+            attach(started)
         } catch {
             phase = .failed(error.userMessage)
         }
@@ -84,12 +104,15 @@ final class AppModel {
         Task {
             await core.shutdown()
             signal.yield()
+            signal.finish()
         }
-        Task {
+        let timeoutTask = Task {
             try? await Task.sleep(for: limit)
             signal.yield()
+            signal.finish()
         }
         for await _ in finished { break }
+        timeoutTask.cancel()
     }
 
     func report(_ error: Error) {

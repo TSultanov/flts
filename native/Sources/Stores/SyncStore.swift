@@ -91,7 +91,7 @@ final class SyncStore: CoreBound {
     }
 
     private func run(_ action: (any CoreService) async throws -> Void) async {
-        guard let core else { return }
+        guard let core, !busy else { return }
         busy = true
         defer { busy = false }
         do {

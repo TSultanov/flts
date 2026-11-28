@@ -26,6 +26,8 @@ final class ChapterStore {
     private var epochs: [Int: Int] = [:]
     private var pending: Set<Int> = []
     private var flushScheduled = false
+    private var reloadIdsTask: Task<Void, Never>?
+    private var flushTask: Task<Void, Never>?
 
     static let batchSize = 64
 
@@ -43,7 +45,8 @@ final class ChapterStore {
                 case .cardsUpdated:
                     refetch(paragraphIds)
                 case .bookUpdated(let id) where id == bookId:
-                    Task { await self.reloadIds() }
+                    self.reloadIdsTask?.cancel()
+                    self.reloadIdsTask = Task { await self.reloadIds() }
                 default: break
                 }
             })
@@ -52,24 +55,35 @@ final class ChapterStore {
     func close() {
         events.cancel(tokens)
         tokens = []
+        reloadIdsTask?.cancel()
+        reloadIdsTask = nil
+        flushTask?.cancel()
+        flushTask = nil
+        flushScheduled = false
     }
 
     func load() async {
         do {
-            paragraphIds = try await core.getBookChapterParagraphIds(bookId: bookId, chapterId: chapterId)
-            let fetched = try await fetch(paragraphIds)
+            let ids = try await core.getBookChapterParagraphIds(bookId: bookId, chapterId: chapterId)
+            guard !Task.isCancelled else { return }
+            let fetched = try await fetch(ids)
+            guard !Task.isCancelled else { return }
+            paragraphIds = ids
             paragraphs = Dictionary(uniqueKeysWithValues: fetched.map { ($0.id, $0) })
             loaded = true
             changedIds = nil
             revision += 1
         } catch {
+            guard !Task.isCancelled else { return }
             self.error = error.userMessage
             loaded = true
         }
     }
 
     private func reloadIds() async {
-        guard let ids = try? await core.getBookChapterParagraphIds(bookId: bookId, chapterId: chapterId) else {
+        guard let ids = try? await core.getBookChapterParagraphIds(bookId: bookId, chapterId: chapterId),
+            !Task.isCancelled
+        else {
             return
         }
         // Same ids: text changes arrive as `paragraph_updated`, and the queue
@@ -104,13 +118,14 @@ final class ChapterStore {
         pending.formUnion(wanted)
         guard !flushScheduled else { return }
         flushScheduled = true
-        Task { @MainActor in
+        flushTask = Task { @MainActor in
             await Task.yield()
+            guard !Task.isCancelled else { return }
             flushScheduled = false
             let ids = pending.sorted()
             pending = []
             let started = Dictionary(uniqueKeysWithValues: ids.map { ($0, epochs[$0, default: 0]) })
-            guard let fetched = try? await fetch(ids) else { return }
+            guard let fetched = try? await fetch(ids), !Task.isCancelled else { return }
             var changed = Set<Int>()
             for p in fetched where epochs[p.id, default: 0] == started[p.id] {
                 if paragraphs[p.id] != p {

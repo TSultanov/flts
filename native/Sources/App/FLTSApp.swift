@@ -41,7 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Appearance.apply()
         // Unit tests run inside the app; they must not open a real library.
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
-        model.start()
+        Task { await model.startAsync() }
         pinWindowSizeForTests()
     }
 

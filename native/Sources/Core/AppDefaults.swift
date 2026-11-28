@@ -11,9 +11,10 @@ enum AppDefaults {
         return env["FLTS_NO_ANIMATIONS"] != nil && !(env["FLTS_CONFIG_DIR"] ?? "").isEmpty
     }()
 
-    static var store: UserDefaults {
+    // `UserDefaults` is thread-safe, though Foundation does not mark it `Sendable`.
+    nonisolated(unsafe) static let store: UserDefaults = {
         let env = ProcessInfo.processInfo.environment
         let isolated = !(env["FLTS_CONFIG_DIR"] ?? "").isEmpty || env["XCTestConfigurationFilePath"] != nil
         return isolated ? UserDefaults(suiteName: "com.TS.FLTS.isolated") ?? .standard : .standard
-    }
+    }()
 }

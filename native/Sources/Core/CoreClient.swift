@@ -8,7 +8,6 @@ typealias CoreService = FltsCoreProtocol
 
 /// Starts the Rust core with a shell that hops events onto the main actor.
 enum CoreClient {
-    @MainActor
     static func start(events: EventHub) throws -> FltsCore {
         try FltsCore.start(shell: ShellBridge(events: events))
     }

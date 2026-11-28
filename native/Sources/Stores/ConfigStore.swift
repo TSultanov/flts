@@ -15,6 +15,10 @@ final class ConfigStore: CoreBound {
 
     private let events: EventHub
     private var core: (any CoreService)?
+    private var reloadGen = 0
+    private var modelsGen = 0
+    private var updating = false
+    private var updateWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(events: EventHub) {
         self.events = events
@@ -35,11 +39,16 @@ final class ConfigStore: CoreBound {
 
     func reload() async {
         guard let core else { return }
+        reloadGen += 1
+        let gen = reloadGen
         do {
-            config = try await core.getConfig()
+            let next = try await core.getConfig()
+            guard gen == reloadGen else { return }
+            config = next
             loaded = true
             await loadModels()
         } catch {
+            guard gen == reloadGen else { return }
             self.error = error.userMessage
             loaded = true
         }
@@ -47,9 +56,13 @@ final class ConfigStore: CoreBound {
 
     func loadModels() async {
         guard let core else { return }
+        modelsGen += 1
+        let gen = modelsGen
         modelsLoading = true
-        defer { modelsLoading = false }
-        models = (try? await core.getModels()) ?? []
+        defer { if gen == modelsGen { modelsLoading = false } }
+        let fetched = (try? await core.getModels()) ?? []
+        guard gen == modelsGen else { return }
+        models = fetched
     }
 
     /// Onboarding is done once a target language and the provider's key are set.
@@ -72,6 +85,17 @@ final class ConfigStore: CoreBound {
     }
 
     func update(_ change: (inout AppConfig) -> Void) async {
+        if updating {
+            await withCheckedContinuation { updateWaiters.append($0) }
+        }
+        updating = true
+        defer {
+            if updateWaiters.isEmpty {
+                updating = false
+            } else {
+                updateWaiters.removeFirst().resume()
+            }
+        }
         guard let core, var next = config else { return }
         change(&next)
         guard next != config else { return }

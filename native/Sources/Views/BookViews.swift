@@ -5,10 +5,13 @@ struct ChaptersList: View {
     /// The row the keyboard is on; a chapter opens on Return or a click.
     @State private var highlighted: Int?
     @FocusState private var focused: Bool
+    @State private var openTask: Task<Void, Never>?
 
     private func open(_ id: Int) {
-        Task {
+        openTask?.cancel()
+        openTask = Task {
             await session.open(chapter: id)
+            guard !Task.isCancelled, session.book.currentChapter == id else { return }
             // As in the web app, picking a chapter closes the list (also when
             // it is the open one); closing hands the keys back to the reader.
             session.controls.hideChapters?()

@@ -42,6 +42,8 @@ final class BookSession {
     let controls = ReaderControls()
     private let core: any CoreService
     private let events: EventHub
+    private var openTask: Task<Void, Never>?
+    private var closed = false
 
     init(bookId: UUID, core: any CoreService, events: EventHub) {
         self.core = core
@@ -52,20 +54,27 @@ final class BookSession {
 
     func start() async {
         await book.load()
+        guard !closed else { return }
         if let id = book.currentChapter { await open(chapter: id) }
     }
 
     func open(chapter id: Int) async {
-        guard chapter?.chapterId != id else { return }
+        guard !closed, chapter?.chapterId != id else { return }
+        openTask?.cancel()
         chapter?.close()
         book.currentChapter = id
         word.select(nil, surface: nil)
         let store = ChapterStore(bookId: book.bookId, chapterId: id, core: core, events: events)
         chapter = store
-        await store.load()
+        let task = Task { await store.load() }
+        openTask = task
+        await task.value
     }
 
     func close() {
+        closed = true
+        openTask?.cancel()
+        openTask = nil
         chapter?.close()
         book.close()
         word.close()
