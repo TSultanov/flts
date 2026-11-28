@@ -40,6 +40,11 @@ extension ReaderCanvas: NSMenuItemValidation {
         window?.makeFirstResponder(self)
     }
 
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil { detachFromWindow() }
+    }
+
     /// Keys must reach the reader as soon as it shows; a request made before it
     /// had a window would have been dropped.
     override func viewDidMoveToWindow() {
@@ -98,7 +103,9 @@ extension ReaderCanvas: NSMenuItemValidation {
     }
 
     @objc private func lookUpSelection(_ sender: NSMenuItem) {
-        guard let range = textSelection, let point = sender.representedObject as? CGPoint else { return }
+        guard let range = textSelection, range.location >= 0, NSMaxRange(range) <= text.storage.length,
+            let point = sender.representedObject as? CGPoint
+        else { return }
         showDefinition(for: text.storage.attributedSubstring(from: range), at: point)
     }
 
@@ -134,11 +141,13 @@ extension ReaderCanvas: NSMenuItemValidation {
         let menu = NSMenu()
         if let w = hit.wordIndex, let p = text.paragraphs[hit.paragraphId], w < p.words.count {
             let word = p.words[w]
-            let surface = (p.text as NSString).substring(with: NSRange(location: word.start, length: word.len))
-            menu.addItem(withTitle: "Look Up “\(surface)”", action: #selector(lookUpMenu(_:)), keyEquivalent: "")
-                .representedObject = LookUp(paragraphId: hit.paragraphId, wordIndex: w, point: point)
-            menu.addItem(withTitle: "Copy “\(surface)”", action: #selector(copyString(_:)), keyEquivalent: "")
-                .representedObject = surface
+            let surface = p.text.safeSubstring(start: word.start, len: word.len)
+            if !surface.isEmpty {
+                menu.addItem(withTitle: "Look Up “\(surface)”", action: #selector(lookUpMenu(_:)), keyEquivalent: "")
+                    .representedObject = LookUp(paragraphId: hit.paragraphId, wordIndex: w, point: point)
+                menu.addItem(withTitle: "Copy “\(surface)”", action: #selector(copyString(_:)), keyEquivalent: "")
+                    .representedObject = surface
+            }
         }
         if let p = text.paragraphs[hit.paragraphId] {
             menu.addItem(withTitle: "Copy Paragraph", action: #selector(copyString(_:)), keyEquivalent: "")
@@ -160,7 +169,8 @@ extension ReaderCanvas: NSMenuItemValidation {
 
     @objc private func lookUpMenu(_ sender: NSMenuItem) {
         guard let lookUp = sender.representedObject as? LookUp,
-            let range = text.wordRange(paragraphId: lookUp.paragraphId, wordIndex: lookUp.wordIndex)
+            let range = text.wordRange(paragraphId: lookUp.paragraphId, wordIndex: lookUp.wordIndex),
+            range.location >= 0, NSMaxRange(range) <= text.storage.length
         else { return }
         let attributed = text.storage.attributedSubstring(from: range)
         showDefinition(for: attributed, at: lookUp.point)

@@ -53,6 +53,11 @@ extension ReaderCanvas: @preconcurrency UIEditMenuInteractionDelegate {
         becomeFirstResponder()
     }
 
+    override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        if newWindow == nil { detachFromWindow() }
+    }
+
     func controlsMoved() {}
 
     func pageChanged() {
@@ -85,9 +90,9 @@ extension ReaderCanvas: @preconcurrency UIEditMenuInteractionDelegate {
             return
         }
         // In the margins (not over text), a tap turns the page, as in other readers.
-        // A narrow margin is still a finger wide here; words were tried above.
+        // A narrow margin is still a finger wide here; words and gutter buttons were tried above.
         if point.x > bounds.width - max(margins.right, 26) { return nextSpread() }
-        if point.x < margins.left - 2 * controlSlop - controlSize { return previousSpread() }
+        if point.x < max(margins.left, 26), !nearControl(point) { return previousSpread() }
         selectWord(at: point)
     }
 
@@ -143,15 +148,18 @@ extension ReaderCanvas: @preconcurrency UIEditMenuInteractionDelegate {
         var actions: [UIMenuElement] = []
         if let w = hit.wordIndex, w < p.words.count {
             let word = p.words[w]
-            let surface = (p.text as NSString).substring(with: NSRange(location: word.start, length: word.len))
-            actions.append(UIAction(title: "Look Up", image: UIImage(systemName: "book")) { [weak self] _ in self?.lookUp(surface) })
-            actions.append(UIAction(title: "Copy Word") { _ in UIPasteboard.general.string = surface })
+            let surface = p.text.safeSubstring(start: word.start, len: word.len)
+            if !surface.isEmpty {
+                actions.append(UIAction(title: "Look Up", image: UIImage(systemName: "book")) { [weak self] _ in self?.lookUp(surface) })
+                actions.append(UIAction(title: "Copy Word") { _ in UIPasteboard.general.string = surface })
+            }
             // The sentence the word is in (there is no drag selection by touch).
             let sentence = p.words.filter { $0.sentence == word.sentence }
-            if let first = sentence.first, let last = sentence.last {
-                let range = NSRange(location: first.start, length: last.start + last.len - first.start)
-                let text = (p.text as NSString).substring(with: range).replacingOccurrences(of: "\u{2028}", with: " ")
-                actions.append(UIAction(title: "Copy Sentence") { _ in UIPasteboard.general.string = text })
+            if let start = sentence.map(\.start).min(), let end = sentence.map({ $0.start + $0.len }).max(), end > start {
+                let text = p.text.safeSubstring(start: start, len: end - start).replacingOccurrences(of: "\u{2028}", with: " ")
+                if !text.isEmpty {
+                    actions.append(UIAction(title: "Copy Sentence") { _ in UIPasteboard.general.string = text })
+                }
             }
         }
         actions.append(

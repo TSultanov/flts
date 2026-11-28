@@ -68,7 +68,8 @@ final class ReaderCanvas: PlatformView {
     private(set) var slide: CGFloat = 0 {
         didSet { if slide != oldValue { redraw() } }
     }
-    private var slideTimer: Timer?
+    private nonisolated(unsafe) var slideLink: CADisplayLink?
+    private var slideAnimator: SlideDisplayLink?
 
     /// A dragged text selection, as a storage range of the current layout.
     var textSelection: NSRange? {
@@ -106,6 +107,18 @@ final class ReaderCanvas: PlatformView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    deinit {
+        slideLink?.invalidate()
+    }
+
+    func detachFromWindow() {
+        endSlide()
+        drainScheduled = false
+        generation += 1
+        onFullLayout = nil
+        onChangesApplied = nil
+    }
 
     // MARK: Content
 
@@ -156,12 +169,14 @@ final class ReaderCanvas: PlatformView {
         let batch = ids.compactMap { pendingChanges.removeValue(forKey: $0) }
         if !batch.isEmpty {
             textSelection = nil
+            let wasOddFirst = spreadStart == -1 && columns > 1
             let keep = text.lineAnchor(forPage: firstVisiblePage)
             text.replace(batch)
             text.layout(width: columnWidth, pageHeight: text.pageHeight, breakAt: keep)
-            spreadStart = keep.flatMap { text.page(of: $0) } ?? min(spreadStart, text.pages.count - 1)
+            let page = keep.flatMap { text.page(of: $0) } ?? min(firstVisiblePage, text.pages.count - 1)
+            spreadStart = (wasOddFirst && page == 0) ? -1 : page
             redraw()
-            delegate?.reader(self, movedTo: spreadStart, of: text.pages.count)
+            delegate?.reader(self, movedTo: firstVisiblePage, of: text.pages.count)
         }
         if pendingChanges.isEmpty {
             onChangesApplied?()
@@ -253,7 +268,7 @@ final class ReaderCanvas: PlatformView {
             spreadStart = 0
         }
         redraw()
-        delegate?.reader(self, movedTo: spreadStart, of: text.pages.count)
+        delegate?.reader(self, movedTo: firstVisiblePage, of: text.pages.count)
 
         generation += 1
         let gen = generation
@@ -296,7 +311,7 @@ final class ReaderCanvas: PlatformView {
         spreadStart = keep.flatMap { full.page(of: $0) } ?? 0
         selected = selectedBefore
         redraw()
-        delegate?.reader(self, movedTo: spreadStart, of: text.pages.count)
+        delegate?.reader(self, movedTo: firstVisiblePage, of: text.pages.count)
         // Changes that arrived after this layout started.
         if !pendingChanges.isEmpty { scheduleDrain() }
         onFullLayout?()
@@ -318,7 +333,7 @@ final class ReaderCanvas: PlatformView {
         guard !text.pages.isEmpty else { return }
         ctx.saveGState()
         ctx.translateBy(x: slide, y: 0)
-        drawSpread(from: spreadStart, in: ctx)
+        let rects = drawSpread(from: spreadStart, in: ctx)
         // While it is dragged aside, the spread it uncovers shows beside it.
         if slide != 0, let other = neighbour(slide < 0 ? 1 : -1) {
             ctx.translateBy(x: slide < 0 ? bounds.width : -bounds.width, y: 0)
@@ -326,23 +341,26 @@ final class ReaderCanvas: PlatformView {
         }
         ctx.restoreGState()
         drawFooter()
-        let rects = visibleControlRects().map(\.1)
         if rects != controlSignature {
             controlSignature = rects
-            controlsMoved()
+            DispatchQueue.main.async { [weak self] in self?.controlsMoved() }
         }
     }
 
-    private func drawSpread(from start: Int, in ctx: CGContext) {
+    @discardableResult
+    private func drawSpread(from start: Int, in ctx: CGContext) -> [CGRect] {
+        var rects: [CGRect] = []
         for column in 0..<columns {
             let index = start + column
             guard index >= 0 else { continue }
             guard index < text.pages.count else { break }
-            drawPage(text.pages[index], at: CGPoint(x: columnX(column), y: margins.top), in: ctx)
+            rects += drawPage(text.pages[index], at: CGPoint(x: columnX(column), y: margins.top), in: ctx)
         }
+        return rects
     }
 
-    func drawPage(_ page: ReaderPage, at origin: CGPoint, in ctx: CGContext) {
+    @discardableResult
+    func drawPage(_ page: ReaderPage, at origin: CGPoint, in ctx: CGContext) -> [CGRect] {
         let dy = origin.y - page.top
         let band = CGRect(x: origin.x - columnGap / 2, y: origin.y, width: columnWidth + columnGap, height: page.bottom - page.top)
 
@@ -377,8 +395,9 @@ final class ReaderCanvas: PlatformView {
         ctx.saveGState()
         ctx.clip(to: band)
         drawTranslations(in: page, origin: origin, dy: dy)
-        drawParagraphControls(in: page, origin: origin, dy: dy, ctx: ctx)
+        let controls = drawParagraphControls(in: page, origin: origin, dy: dy, ctx: ctx)
         ctx.restoreGState()
+        return controls
     }
 
     /// The glyph box inside a line-height-tall segment frame; extra leading sits above.
@@ -402,7 +421,9 @@ final class ReaderCanvas: PlatformView {
         let style = NSMutableParagraphStyle()
         style.alignment = .center
         style.lineBreakMode = .byClipping
-        for key in revealed {
+        let visibleParagraphs = Set(
+            text.lines[page.lineRange].compactMap { $0.paragraphIndex < text.order.count ? text.order[$0.paragraphIndex] : nil })
+        for key in revealed where visibleParagraphs.contains(key.paragraphId) {
             guard let p = text.paragraphs[key.paragraphId], key.wordIndex < p.words.count,
                 let translation = p.words[key.wordIndex].translation, !translation.isEmpty,
                 let range = text.wordRange(paragraphId: key.paragraphId, wordIndex: key.wordIndex),
@@ -429,17 +450,26 @@ final class ReaderCanvas: PlatformView {
         }
     }
 
-    func drawParagraphControls(in page: ReaderPage, origin: CGPoint, dy: CGFloat, ctx: CGContext) {
-        for (pid, rect) in controlRects(in: page, origin: origin, dy: dy) {
+    func drawParagraphControls(in page: ReaderPage, origin: CGPoint, dy: CGFloat, ctx: CGContext) -> [CGRect] {
+        let controls = controlRects(in: page, origin: origin, dy: dy)
+        for (pid, rect) in controls {
             if let progress = delegate?.readerTranslationProgress(self, paragraphId: pid) {
                 drawProgress(progress, in: rect, ctx: ctx)
             } else {
                 let enabled = delegate?.readerCanTranslate(self) ?? true
                 let tint = enabled ? PlatformColor.readerSecondary : PlatformColor.readerTertiary.withAlphaComponent(0.35)
-                guard let symbol = PlatformImage.readerSymbol("character.bubble", pointSize: (controlSize * (controlSize < 16 ? 0.85 : 0.6)).rounded(), tint: tint) else { continue }
+                let pointSize = (controlSize * (controlSize < 16 ? 0.85 : 0.6)).rounded()
+                #if os(macOS)
+                let symbol = PlatformImage.readerSymbol("character.bubble", pointSize: pointSize, tint: tint)
+                #else
+                let symbol = PlatformImage.readerSymbol(
+                    "character.bubble", pointSize: pointSize, tint: tint, traitCollection: traitCollection)
+                #endif
+                guard let symbol else { continue }
                 symbol.draw(in: rect.insetBy(dx: (rect.width - symbol.size.width) / 2, dy: (rect.height - symbol.size.height) / 2))
             }
         }
+        return controls.map(\.1)
     }
 
     func drawProgress(_ progress: Double, in rect: CGRect, ctx: CGContext) {
@@ -457,9 +487,10 @@ final class ReaderCanvas: PlatformView {
 
     /// Gutter buttons for untranslated or translating paragraphs that start on this page.
     func controlRects(in page: ReaderPage, origin: CGPoint, dy: CGFloat) -> [(Int, CGRect)] {
+        guard !page.lineRange.isEmpty, page.lineRange.upperBound <= text.lines.count else { return [] }
         var out: [(Int, CGRect)] = []
         let size = controlSize
-        for line in text.lines where line.top >= page.top && line.top < page.bottom {
+        for line in text.lines[page.lineRange] {
             guard line.paragraphIndex < text.order.count else { continue }
             let pid = text.order[line.paragraphIndex]
             guard text.firstLineTop(of: pid) == line.top else { continue }
@@ -570,12 +601,19 @@ final class ReaderCanvas: PlatformView {
     func nearestColumnPoint(_ viewPoint: CGPoint) -> (Int, CGPoint)? {
         for column in (0..<columns).reversed() {
             let index = spreadStart + column
-            guard index < text.pages.count, viewPoint.x >= columnX(column) - columnGap / 2 || column == 0 else { continue }
+            guard index >= 0, index < text.pages.count, viewPoint.x >= columnX(column) - columnGap / 2 || column == 0 else {
+                continue
+            }
             let page = text.pages[index]
             let y = min(max(viewPoint.y - margins.top + page.top, page.top), page.bottom - 1)
             return (column, CGPoint(x: viewPoint.x - columnX(column), y: y))
         }
         return nil
+    }
+
+    func nearControl(_ viewPoint: CGPoint, multiplier: CGFloat = 2) -> Bool {
+        let pad = controlSlop * multiplier
+        return visibleControlRects().contains { $0.1.insetBy(dx: -pad, dy: -pad).contains(viewPoint) }
     }
 
     var selectedText: String? {
@@ -612,10 +650,12 @@ final class ReaderCanvas: PlatformView {
         guard let start = text.layoutManager.textLayoutFragment(for: CGPoint(x: 1, y: first.top + 1)),
             let end = text.layoutManager.textLayoutFragment(for: CGPoint(x: 1, y: max(last.bottom - 1, first.top + 1)))
         else { return nil }
-        let a = text.offset(of: start.rangeInElement.location)
-        let b = text.offset(of: end.rangeInElement.endLocation)
+        let ns = text.storage.string as NSString
+        let len = ns.length
+        let a = min(max(text.offset(of: start.rangeInElement.location), 0), len)
+        let b = min(max(text.offset(of: end.rangeInElement.endLocation), a), len)
         guard b > a else { return nil }
-        return (text.storage.string as NSString).substring(with: NSRange(location: a, length: b - a))
+        return ns.substring(with: NSRange(location: a, length: b - a))
             .replacingOccurrences(of: "\u{2028}", with: "\n")
     }
 
@@ -647,7 +687,7 @@ final class ReaderCanvas: PlatformView {
     func go(toPage page: Int, animated: Bool = true) {
         guard let target = spreadTarget(for: page) else { return }
         endSlide()
-        if animated, !AppDefaults.animationsOff, let layer = flipLayer {
+        if animated, !AppDefaults.animationsOff, !ReaderAccessibility.reduceMotionEnabled, let layer = flipLayer {
             let transition = CATransition()
             transition.type = .push
             transition.subtype = target > spreadStart ? .fromRight : .fromLeft
@@ -663,8 +703,7 @@ final class ReaderCanvas: PlatformView {
     /// A trackpad swipe or a finger drags the spread sideways by `offset`
     /// (negative toward the next spread). With no spread that way it resists.
     func slide(to offset: CGFloat) {
-        slideTimer?.invalidate()
-        slideTimer = nil
+        endSlideLink()
         slide = neighbour(offset < 0 ? 1 : -1) == nil ? offset * 0.2 : offset
     }
 
@@ -685,38 +724,51 @@ final class ReaderCanvas: PlatformView {
 
     /// Drops a slide in progress, e.g. when a key turns the page mid-drag.
     private func endSlide() {
-        slideTimer?.invalidate()
-        slideTimer = nil
+        endSlideLink()
         slide = 0
     }
 
+    private func endSlideLink() {
+        slideLink?.invalidate()
+        slideLink = nil
+        slideAnimator = nil
+    }
+
+    fileprivate func updateSlideAnimation(_ value: CGFloat) {
+        slide = value
+    }
+
+    fileprivate func finishSlideAnimation(link: CADisplayLink, completion: @MainActor () -> Void) {
+        link.invalidate()
+        if slideLink === link {
+            slideLink = nil
+            slideAnimator = nil
+        }
+        completion()
+    }
+
     private func animateSlide(to end: CGFloat, completion: @escaping @MainActor () -> Void) {
-        slideTimer?.invalidate()
-        slideTimer = nil
+        endSlideLink()
         let start = slide
         // Nothing to watch off screen (tests), or animations are off.
-        guard window != nil, !AppDefaults.animationsOff, bounds.width > 0, start != end else {
+        guard window != nil, !AppDefaults.animationsOff, !ReaderAccessibility.reduceMotionEnabled,
+            bounds.width > 0, start != end
+        else {
             slide = end
             completion()
             return
         }
         let duration = 0.12 + 0.16 * Double(min(abs(end - start) / bounds.width, 1))
-        let began = CACurrentMediaTime()
-        let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                let t = min((CACurrentMediaTime() - began) / duration, 1)
-                let eased = 1 - pow(1 - t, 3)
-                self.slide = start + (end - start) * eased
-                if t >= 1 {
-                    self.slideTimer?.invalidate()
-                    self.slideTimer = nil
-                    completion()
-                }
-            }
-        }
-        slideTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
+        let animator = SlideDisplayLink(
+            canvas: self, duration: duration, start: start, end: end, completion: completion)
+        #if os(macOS)
+        let link = displayLink(target: animator, selector: #selector(SlideDisplayLink.step(_:)))
+        #else
+        let link = CADisplayLink(target: animator, selector: #selector(SlideDisplayLink.step(_:)))
+        #endif
+        slideAnimator = animator
+        slideLink = link
+        link.add(to: .main, forMode: .common)
     }
 
     func nextSpread() { go(toPage: spreadStart + columns) }
@@ -728,6 +780,41 @@ final class ReaderCanvas: PlatformView {
     func reveal(paragraphId: Int) {
         guard let page = text.page(forParagraph: paragraphId, pageOffset: 0) else { return }
         if page < spreadStart || page >= spreadStart + columns { go(toPage: page, animated: false) }
+    }
+}
+
+@MainActor
+private final class SlideDisplayLink: NSObject {
+    weak var canvas: ReaderCanvas?
+    let began: TimeInterval
+    let duration: Double
+    let start: CGFloat
+    let end: CGFloat
+    let completion: @MainActor () -> Void
+
+    init(
+        canvas: ReaderCanvas, duration: Double, start: CGFloat, end: CGFloat,
+        completion: @escaping @MainActor () -> Void
+    ) {
+        self.canvas = canvas
+        self.began = CACurrentMediaTime()
+        self.duration = duration
+        self.start = start
+        self.end = end
+        self.completion = completion
+    }
+
+    @objc func step(_ link: CADisplayLink) {
+        guard let canvas else {
+            link.invalidate()
+            return
+        }
+        let t = min((CACurrentMediaTime() - began) / duration, 1)
+        let eased = 1 - pow(1 - t, 3)
+        canvas.updateSlideAnimation(start + (end - start) * eased)
+        if t >= 1 {
+            canvas.finishSlideAnimation(link: link, completion: completion)
+        }
     }
 }
 

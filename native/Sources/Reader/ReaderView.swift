@@ -19,6 +19,7 @@ final class ReaderControls {
     var collapseWordPanel: (() -> Bool)?
     /// Idempotent, so two paths closing the list cannot reopen it.
     var hideChapters: (() -> Void)?
+    var onFlushSave: (() -> Void)?
     var chaptersShown = false
 
     func next() { canvas?.nextSpread() }
@@ -26,17 +27,20 @@ final class ReaderControls {
     func first() { canvas?.go(toPage: 0) }
     func last() { canvas.map { $0.go(toPage: $0.pageCount - 1) } }
     func focus() { canvas?.takeKeys() }
+    func flushSave() { onFlushSave?() }
 }
 
 #if os(macOS)
 extension ReaderView: NSViewRepresentable {
     func makeNSView(context: Context) -> ReaderCanvas { makeCanvas(context.coordinator) }
     func updateNSView(_ canvas: ReaderCanvas, context: Context) { update(canvas, context.coordinator) }
+    static func dismantleNSView(_ canvas: ReaderCanvas, coordinator: Coordinator) { coordinator.dispose(canvas) }
 }
 #else
 extension ReaderView: UIViewRepresentable {
     func makeUIView(context: Context) -> ReaderCanvas { makeCanvas(context.coordinator) }
     func updateUIView(_ canvas: ReaderCanvas, context: Context) { update(canvas, context.coordinator) }
+    static func dismantleUIView(_ canvas: ReaderCanvas, coordinator: Coordinator) { coordinator.dispose(canvas) }
 }
 #endif
 
@@ -60,18 +64,23 @@ struct ReaderView {
         let canvas = ReaderCanvas(frame: .zero)
         canvas.delegate = coordinator
         controls.canvas = canvas
+        controls.onFlushSave = { [weak coordinator] in coordinator?.flushPendingSave() }
         return canvas
     }
 
     func update(_ canvas: ReaderCanvas, _ coordinator: Coordinator) {
         let c = coordinator
+        c.isUpdating = true
+        defer { c.isUpdating = false }
         c.parent = self
         controls.canvas = canvas
+        controls.onFlushSave = { [weak c] in c?.flushPendingSave() }
         canvas.setTypography(typography)
         canvas.setMarginScale(marginScale)
 
         if c.chapterKey != ChapterKey(book: book.bookId, chapter: chapter.chapterId) {
             guard chapter.loaded else { return }
+            c.cancelPendingSave()
             c.chapterKey = ChapterKey(book: book.bookId, chapter: chapter.chapterId)
             c.revision = chapter.revision
             var anchor: ReadingAnchor?
@@ -106,7 +115,10 @@ struct ReaderView {
             }
         }
         // Progress rings follow activity.
-        canvas.redraw()
+        if c.lastActivityEntries != activityEntries {
+            c.lastActivityEntries = activityEntries
+            canvas.redraw()
+        }
     }
 
     struct ChapterKey: Equatable {
@@ -119,12 +131,44 @@ struct ReaderView {
         var parent: ReaderView?
         var chapterKey: ChapterKey?
         var revision = -1
+        var isUpdating = false
+        var lastActivityEntries: [TranslationActivityStore.Key: TranslationActivity] = [:]
         private var saveTask: Task<Void, Never>?
+        private var pendingSave: (book: BookStore, chapterId: Int, anchor: ReadingAnchor)?
+
+        func dispose(_ canvas: ReaderCanvas?) {
+            cancelPendingSave()
+            parent?.controls.onFlushSave = nil
+            canvas?.delegate = nil
+            canvas?.detachFromWindow()
+            parent = nil
+        }
+
+        func cancelPendingSave() {
+            saveTask?.cancel()
+            saveTask = nil
+            pendingSave = nil
+        }
+
+        func flushPendingSave() {
+            guard let pending = pendingSave else { return }
+            saveTask?.cancel()
+            saveTask = nil
+            pendingSave = nil
+            guard pending.book.currentChapter == pending.chapterId else { return }
+            let state = BookReadingState(
+                chapterId: pending.chapterId, paragraphId: pending.anchor.paragraphId,
+                pageOffset: pending.anchor.pageOffset)
+            if let line = pending.anchor.line { LocalPosition(state: state, line: line).save(pending.book.bookId) }
+            pending.book.save(
+                chapterId: pending.chapterId, paragraphId: pending.anchor.paragraphId,
+                pageOffset: pending.anchor.pageOffset)
+        }
 
         func reader(_ canvas: ReaderCanvas, selected paragraphId: Int, wordIndex: Int) {
             guard let parent, let p = canvas.text.paragraphs[paragraphId], wordIndex < p.words.count else { return }
             let w = p.words[wordIndex]
-            let surface = (p.text as NSString).substring(with: NSRange(location: w.start, length: w.len))
+            let surface = p.text.safeSubstring(start: w.start, len: w.len)
             parent.word.select(
                 WordRef(bookId: parent.book.bookId, paragraphId: paragraphId, sentence: w.sentence, word: w.word, flatIndex: w.flatIndex),
                 surface: surface)
@@ -141,16 +185,28 @@ struct ReaderView {
 
         func reader(_ canvas: ReaderCanvas, movedTo page: Int, of count: Int) {
             guard let parent else { return }
-            parent.controls.page = page
-            parent.controls.pageCount = count
+            let controls = parent.controls
+            if isUpdating {
+                if controls.page != page || controls.pageCount != count {
+                    DispatchQueue.main.async {
+                        if controls.page != page { controls.page = page }
+                        if controls.pageCount != count { controls.pageCount = count }
+                    }
+                }
+            } else {
+                if controls.page != page { controls.page = page }
+                if controls.pageCount != count { controls.pageCount = count }
+            }
             // A provisional layout knows only its own pages; wait for the full one.
             guard !canvas.isProvisional, let anchor = canvas.currentAnchor() else { return }
             let book = parent.book
             let chapterId = parent.chapter.chapterId
+            pendingSave = (book, chapterId, anchor)
             saveTask?.cancel()
             saveTask = Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(400))
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, book.currentChapter == chapterId else { return }
+                self.pendingSave = nil
                 let state = BookReadingState(
                     chapterId: chapterId, paragraphId: anchor.paragraphId, pageOffset: anchor.pageOffset)
                 if let line = anchor.line { LocalPosition(state: state, line: line).save(book.bookId) }

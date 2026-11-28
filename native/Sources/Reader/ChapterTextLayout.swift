@@ -89,6 +89,19 @@ struct ReaderPage {
     let bottom: CGFloat
     /// Index into `order` of the paragraph owning the page's first line.
     let firstParagraph: Int
+    /// Range of lines in `ChapterTextLayout.lines` belonging to this page.
+    let lineRange: Range<Int>
+}
+
+extension String {
+    /// Clamped UTF-16 slice so out-of-range metadata never triggers `NSRangeException`.
+    func safeSubstring(start: Int, len: Int) -> String {
+        let ns = self as NSString
+        let clampedStart = min(max(start, 0), ns.length)
+        let clampedLen = min(max(len, 0), ns.length - clampedStart)
+        guard clampedLen > 0 else { return "" }
+        return ns.substring(with: NSRange(location: clampedStart, length: clampedLen))
+    }
 }
 
 /// A chapter's text in one TextKit 2 layout of column width; pages are bands
@@ -271,12 +284,15 @@ final class ChapterTextLayout: @unchecked Sendable {
         for (n, start) in starts.enumerated() {
             let stop = n + 1 < starts.count ? starts[n + 1] : lines.count
             let bottom = stop < lines.count ? lines[stop].top : lines[stop - 1].bottom
-            pages.append(ReaderPage(top: lines[start].top, bottom: bottom, firstParagraph: lines[start].paragraphIndex))
+            pages.append(
+                ReaderPage(
+                    top: lines[start].top, bottom: bottom, firstParagraph: lines[start].paragraphIndex,
+                    lineRange: start..<stop))
             for line in lines[start..<stop] where firstPage[line.paragraphIndex] == nil {
                 firstPage[line.paragraphIndex] = n
             }
         }
-        if pages.isEmpty { pages = [ReaderPage(top: 0, bottom: pageHeight, firstParagraph: 0)] }
+        if pages.isEmpty { pages = [ReaderPage(top: 0, bottom: pageHeight, firstParagraph: 0, lineRange: 0..<0)] }
         self.pages = pages
         self.firstPageOfParagraph = Dictionary(
             uniqueKeysWithValues: firstPage.compactMap { idx, page in idx < order.count ? (order[idx], page) : nil })

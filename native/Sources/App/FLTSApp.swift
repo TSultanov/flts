@@ -5,7 +5,6 @@ import SwiftUI
 @main
 struct FLTSApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
         // One window, so it is listed in the Window menu and can be reopened
@@ -89,7 +88,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 struct AppCommands: Commands {
     let model: AppModel
-    @Environment(\.openWindow) private var openWindow
     @FocusedValue(\.readerControls) private var reader
     @FocusedValue(\.bookActions) private var book
 

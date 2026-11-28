@@ -23,6 +23,9 @@ struct FLTSApp: App {
                 model.start()
             }
             .onChange(of: phase) { _, phase in
+                if phase == .background {
+                    model.activeReader?.flushSave()
+                }
                 guard phase == .active else { return }
                 // Back from the background: sync catches up, stale progress is dropped.
                 model.sync.wake()
@@ -42,6 +45,13 @@ private struct ReaderCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Book") {
+            Button("Next Page") { reader?.next() }
+                .keyboardShortcut(.rightArrow, modifiers: [.command])
+                .disabled(reader == nil)
+            Button("Previous Page") { reader?.previous() }
+                .keyboardShortcut(.leftArrow, modifiers: [.command])
+                .disabled(reader == nil)
+            Divider()
             Group {
                 Button("Translate Chapter") { book?.translateChapter() }.keyboardShortcut("t", modifiers: [.command, .shift])
                 Button(book?.wordDetailsShown == true ? "Hide Word Details" : "Show Word Details") { book?.toggleWordPanel() }

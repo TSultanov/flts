@@ -53,27 +53,47 @@ extension PlatformView {
     }
 }
 
+enum ReaderAccessibility {
+    @MainActor
+    static var reduceMotionEnabled: Bool {
+        #if os(macOS)
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        #else
+        UIAccessibility.isReduceMotionEnabled
+        #endif
+    }
+}
+
 extension PlatformImage {
     @MainActor private static var symbols: [String: PlatformImage] = [:]
 
     /// A symbol in one flat colour, to draw into the page. Cached: the page
     /// draws one per untranslated paragraph on every redraw.
+    #if os(macOS)
     @MainActor
     static func readerSymbol(_ name: String, pointSize: CGFloat, tint: PlatformColor) -> PlatformImage? {
-        #if os(macOS)
         // The tinted image redraws itself for the current appearance.
         let key = "\(name)-\(pointSize)-\(tint)"
         if let cached = symbols[key] { return cached }
         let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
         let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(config)?.tinted(tint)
-        #else
-        let resolved = tint.resolvedColor(with: .current)
+        if symbols.count >= 64 { symbols.removeAll(keepingCapacity: true) }
+        symbols[key] = image
+        return image
+    }
+    #else
+    @MainActor
+    static func readerSymbol(
+        _ name: String, pointSize: CGFloat, tint: PlatformColor, traitCollection: UITraitCollection? = nil
+    ) -> PlatformImage? {
+        let resolved = tint.resolvedColor(with: traitCollection ?? .current)
         let key = "\(name)-\(pointSize)-\(resolved)"
         if let cached = symbols[key] { return cached }
         let config = UIImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
         let image = UIImage(systemName: name, withConfiguration: config)?.withTintColor(resolved, renderingMode: .alwaysOriginal)
-        #endif
+        if symbols.count >= 64 { symbols.removeAll(keepingCapacity: true) }
         symbols[key] = image
         return image
     }
+    #endif
 }
