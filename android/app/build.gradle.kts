@@ -19,7 +19,11 @@ val abis = (env("FLTS_ANDROID_ABIS") ?: "arm64-v8a").split(",")
 
 android {
     namespace = "com.TS.FLTS"
-    compileSdk = 36
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 1
+        }
+    }
 
     defaultConfig {
         // The Tauri app's id, so installing over it keeps its data.
@@ -51,6 +55,7 @@ android {
         }
         release {
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("release")
         }
@@ -92,6 +97,7 @@ for ((variant, profile) in listOf("Debug" to "debug", "Release" to "release-ship
 tasks.withType<Test>().configureEach {
     // One core per process.
     forkEvery = 1
+    jvmArgs("--add-opens=java.base/jdk.internal.access=ALL-UNNAMED")
     env("FLTS_SMOKE_CONFIG_DIR")?.let { dir ->
         environment("FLTS_CONFIG_DIR", dir)
         systemProperty("jna.library.path", File(repoRoot, "target/debug").path)
@@ -100,43 +106,43 @@ tasks.withType<Test>().configureEach {
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2025.09.00")
+    val composeBom = platform("androidx.compose:compose-bom:2026.11.01")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-    implementation("androidx.activity:activity-compose:1.10.1")
-    implementation("androidx.core:core-ktx:1.16.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.2")
-    implementation("androidx.lifecycle:lifecycle-process:2.9.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.core:core-ktx:1.19.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.1")
+    implementation("androidx.lifecycle:lifecycle-process:2.11.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 
     // UniFFI's Kotlin bindings call the core through JNA.
-    implementation("net.java.dev.jna:jna:5.17.0@aar")
+    implementation("net.java.dev.jna:jna:5.19.1@aar")
     implementation("org.rustls:rustls-platform-verifier:$rustlsVerifierVersion")
 
     // Pairing: draw this device's code, scan another's.
-    implementation("com.google.zxing:core:3.5.3")
-    implementation("androidx.camera:camera-camera2:1.4.2")
-    implementation("androidx.camera:camera-lifecycle:1.4.2")
-    implementation("androidx.camera:camera-view:1.4.2")
+    implementation("com.google.zxing:core:3.5.4")
+    implementation("androidx.camera:camera-camera2:1.7.0")
+    implementation("androidx.camera:camera-lifecycle:1.7.0")
+    implementation("androidx.camera:camera-view:1.7.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
-    testImplementation("org.robolectric:robolectric:4.15.1")
-    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+    testImplementation("org.robolectric:robolectric:4.18.1")
+    testImplementation("androidx.test:core:1.7.0")
     // The aar has no desktop natives.
-    testImplementation("net.java.dev.jna:jna:5.17.0")
+    testImplementation("net.java.dev.jna:jna:5.19.1")
     testImplementation(composeBom)
     testImplementation("androidx.compose.ui:ui-test-junit4")
 
     androidTestImplementation(composeBom)
-    androidTestImplementation("androidx.test.ext:junit:1.2.1")
-    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

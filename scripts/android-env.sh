@@ -19,10 +19,18 @@ fi
 export ANDROID_HOME
 
 if [ -z "${NDK_HOME:-}" ]; then
-  NDK_HOME="${ANDROID_NDK_HOME:-$(ls -d "$ANDROID_HOME"/ndk/27.*/ 2>/dev/null | sort -V | tail -1 | sed 's:/$::')}"
+  NDK_HOME="${ANDROID_NDK_HOME:-$(
+    for d in "$ANDROID_HOME"/ndk/*/; do
+      [ -d "$d" ] || continue
+      v="${d%/}"; v="${v##*/}"
+      major="${v%%.*}"
+      case "$major" in ''|*[!0-9]*) continue ;; esac
+      [ "$major" -ge 27 ] && printf '%s\n' "${d%/}"
+    done | sort -V | tail -1
+  )}"
 fi
 if [ -z "$NDK_HOME" ] || [ ! -d "$NDK_HOME" ]; then
-  echo "NDK r27 not found under $ANDROID_HOME/ndk: set NDK_HOME" >&2
+  echo "NDK r27+ not found under $ANDROID_HOME/ndk: set NDK_HOME" >&2
   exit 1
 fi
 export NDK_HOME
