@@ -346,4 +346,10 @@ class StoreTests {
         assertEquals("k", current.geminiApiKey)
         assertEquals(4, current.translationConcurrency)
     }
+
+    @Test
+    fun iso3LocaleMappingPrefersModernCodes() {
+        assertEquals("he", ReaderTypography.localeFor("heb").toLanguageTag())
+        assertEquals("id", ReaderTypography.localeFor("ind").toLanguageTag())
+    }
 }

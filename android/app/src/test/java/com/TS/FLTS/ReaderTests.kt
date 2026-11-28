@@ -115,6 +115,19 @@ class ChapterLayoutTests {
         layout.layout(600f, 500f)
         assertEquals(listOf(0, 4), layout.lines.map { it.start })
     }
+
+    @Test
+    fun rtlWordFramesFollowVisualOrderAndHitTest() {
+        val layout = ChapterTextLayout()
+        val rtl = paragraph(0, "مرحبا بكم جميعا")
+        layout.setContent(listOf(0), mapOf(0 to rtl))
+        layout.layout(400f, 500f)
+        val first = layout.wordFrames(0, 0).single()
+        val second = layout.wordFrames(0, 1).single()
+        assertTrue("first RTL word should sit to the right of the second", first.left >= second.right - 0.5f)
+        assertEquals(0, layout.hit(first.centerX(), first.centerY())?.wordIndex)
+        assertEquals(1, layout.hit(second.centerX(), second.centerY())?.wordIndex)
+    }
 }
 
 @RunWith(RobolectricTestRunner::class)
@@ -431,5 +444,37 @@ class ReaderViewTests {
 
         assertEquals(0, view.fullLayoutsStarted)
         assertEquals(0, fullLayoutCallbacks)
+    }
+
+    @Test
+    fun drainChangesPreservesOddSpreadPairing() {
+        val paragraphs = chapter()
+        var targetView: ReaderView? = null
+        for (pid in 5 until 110) {
+            val candidate = open(ReadingAnchor(pid, 0), paragraphs)
+            if (candidate.spreadStart % 2 == 1) {
+                targetView = candidate
+                break
+            }
+        }
+        val view = targetView!!
+        view.go(0, animated = false)
+        assertEquals(-1, view.spreadStart)
+        var reportedPage: Int? = null
+        view.listener = object : ReaderListener {
+            override fun selected(paragraphId: Int, wordIndex: Int) {}
+            override fun translate(paragraphId: Int, useCache: Boolean) {}
+            override fun movedTo(page: Int, count: Int) {
+                reportedPage = page
+            }
+            override fun translationProgress(paragraphId: Int): Double? = null
+            override fun toggle(key: Char): Boolean = false
+            override fun canTranslate(): Boolean = true
+            override fun deselected() {}
+        }
+        view.replace(listOf(paragraphs[0]!!.copy(text = paragraphs[0]!!.text + " fin")))
+        idle()
+        assertEquals(-1, view.spreadStart)
+        assertEquals(0, reportedPage)
     }
 }

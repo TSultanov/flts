@@ -1,5 +1,7 @@
 package com.TS.FLTS.reader
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -122,14 +124,14 @@ class ReaderView(context: Context) : View(context) {
             invalidate()
         }
 
-    private val density = resources.displayMetrics.density
+    private val density: Float get() = resources.displayMetrics.density
     private fun dp(value: Float) = value * density
 
     private var marginTop = dp(40f)
     private var marginLeft = dp(56f)
     private var marginBottom = dp(44f)
     private var marginRight = dp(56f)
-    private val columnGap = dp(64f)
+    private val columnGap: Float get() = dp(64f)
     private var controlSize = dp(22f)
     private var controlGap = dp(10f)
 
@@ -143,7 +145,7 @@ class ReaderView(context: Context) : View(context) {
         }
 
     /// A finger needs about 44 dp; the button is drawn half that wide.
-    private val controlSlop = dp(11f)
+    private val controlSlop: Float get() = dp(11f)
 
     private val main = Handler(Looper.getMainLooper())
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -202,12 +204,14 @@ class ReaderView(context: Context) : View(context) {
         if (isProvisional) return
         val batch = pendingChanges.keys.take(CHANGES_PER_TURN).mapNotNull { pendingChanges.remove(it) }
         if (batch.isNotEmpty()) {
+            val wasOddFirst = columns > 1 && spreadStart == -1
             val keep = text.lineAnchor(firstVisiblePage)
             text.replace(batch)
             text.layout(columnWidth, text.pageHeight, keep)
-            spreadStart = keep?.let { text.page(it) } ?: min(spreadStart, text.pages.size - 1)
+            val nextPage = keep?.let { text.page(it) } ?: min(firstVisiblePage, text.pages.size - 1)
+            spreadStart = if (wasOddFirst && nextPage == 0) -1 else nextPage
             invalidate()
-            listener?.movedTo(spreadStart, text.pages.size)
+            listener?.movedTo(firstVisiblePage, text.pages.size)
         }
         if (pendingChanges.isEmpty()) onChangesApplied?.invoke() else scheduleDrain()
     }
@@ -641,7 +645,8 @@ class ReaderView(context: Context) : View(context) {
         }
     }
 
-    private val animates: Boolean get() = isAttachedToWindow && !AppPrefs.animationsOff && width > 0
+    private val animates: Boolean
+        get() = isAttachedToWindow && !AppPrefs.animationsOff && ValueAnimator.areAnimatorsEnabled() && width > 0
 
     // Sliding
 
@@ -694,19 +699,22 @@ class ReaderView(context: Context) : View(context) {
             completion()
             return
         }
-        var finished = false
         slideAnimator = ValueAnimator.ofFloat(start, end).apply {
             this.duration = duration
             // Cubic ease-out.
             interpolator = DecelerateInterpolator(1.5f)
-            addUpdateListener {
-                slide = it.animatedValue as Float
-                if (it.animatedFraction >= 1f && !finished) {
-                    finished = true
-                    slideAnimator = null
-                    completion()
+            var cancelled = false
+            addUpdateListener { slide = it.animatedValue as Float }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationCancel(animation: Animator) {
+                    cancelled = true
                 }
-            }
+
+                override fun onAnimationEnd(animation: Animator) {
+                    slideAnimator = null
+                    if (!cancelled) completion()
+                }
+            })
             start()
         }
     }
@@ -769,7 +777,13 @@ class ReaderView(context: Context) : View(context) {
         return handled || super.onTouchEvent(event)
     }
 
+    override fun performClick(): Boolean {
+        super.performClick()
+        return true
+    }
+
     private fun tapped(x: Float, y: Float) {
+        performClick()
         takeKeys()
         if (activateControl(x, y)) return
         // A finger is not a pointer: a tap just beside a word still means the word.
@@ -803,14 +817,19 @@ class ReaderView(context: Context) : View(context) {
         val p = text.paragraphs[hit.paragraphId] ?: return
         val word = hit.wordIndex?.let { p.words.getOrNull(it) }
         if (word != null) {
-            val surface = p.text.substring(word.start, word.start + word.len)
+            val len = p.text.length
+            val wStart = word.start.coerceIn(0, len)
+            val wEnd = (word.start + word.len).coerceIn(wStart, len)
+            val surface = p.text.substring(wStart, wEnd)
             menu.add("Copy Word").setOnMenuItemClickListener { copy(surface) }
             // The sentence the word is in (there is no drag selection by touch).
             val sentence = p.words.filter { it.sentence == word.sentence }
             val first = sentence.firstOrNull()
             val last = sentence.lastOrNull()
             if (first != null && last != null) {
-                val text = p.text.substring(first.start, last.start + last.len).replace(' ', ' ')
+                val sStart = minOf(first.start, last.start).coerceIn(0, len)
+                val sEnd = maxOf(first.start + first.len, last.start + last.len).coerceIn(sStart, len)
+                val text = p.text.substring(sStart, sEnd).replace(' ', ' ')
                 menu.add("Copy Sentence").setOnMenuItemClickListener { copy(text) }
             }
         }

@@ -38,7 +38,10 @@ data class ReaderTypography(
 
     companion object {
         private val iso3 by lazy {
-            Locale.getISOLanguages().associateBy { runCatching { Locale(it).isO3Language }.getOrDefault(it) }
+            val legacy = setOf("iw", "in", "ji")
+            Locale.getISOLanguages()
+                .filter { it !in legacy }
+                .associateBy { runCatching { Locale.forLanguageTag(it).isO3Language }.getOrDefault(it) }
         }
 
         /// The core names languages by ISO 639-3; the platform's hyphenators
@@ -188,7 +191,7 @@ class ChapterTextLayout(val typography: ReaderTypography = ReaderTypography(), v
 
     private fun isJustified(block: StaticLayout, line: Int): Boolean {
         val end = block.getLineEnd(line)
-        return typography.justify && end < block.text.length && block.text[end - 1] != '\n'
+        return typography.justify && end > 0 && end < block.text.length && block.text[end - 1] != '\n'
     }
 
     /// The line ends in the middle of a word, so it is drawn with a hyphen.
@@ -238,9 +241,23 @@ class ChapterTextLayout(val typography: ReaderTypography = ReaderTypography(), v
         if (to == from) return emptyList()
         val out = ArrayList<RectF>(2)
         for (line in block.getLineForOffset(from)..block.getLineForOffset(to - 1)) {
-            val stretch = spaceStretch(block, line)
-            val a = x(block, line, max(from, block.getLineStart(line)), stretch)
-            val b = x(block, line, min(to, block.getLineEnd(line)), stretch)
+            val a: Float
+            val b: Float
+            if (block.getParagraphDirection(line) == Layout.DIR_RIGHT_TO_LEFT) {
+                val lineStart = block.getLineStart(line)
+                val lineEnd = block.getLineVisibleEnd(line)
+                val segFrom = max(from, lineStart).coerceIn(lineStart, lineEnd)
+                val segTo = min(to, lineEnd).coerceIn(segFrom, lineEnd)
+                if (segTo <= segFrom) continue
+                val h0 = block.getPrimaryHorizontal(segFrom)
+                val h1 = block.getPrimaryHorizontal(segTo)
+                a = min(h0, h1)
+                b = max(h0, h1)
+            } else {
+                val stretch = spaceStretch(block, line)
+                a = x(block, line, max(from, block.getLineStart(line)), stretch)
+                b = x(block, line, min(to, block.getLineEnd(line)), stretch)
+            }
             if (b <= a) continue
             out.add(RectF(a, top + block.getLineTop(line), b, top + block.getLineBottom(line)))
         }

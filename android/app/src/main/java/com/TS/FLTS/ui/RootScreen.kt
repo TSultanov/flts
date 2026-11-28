@@ -1,6 +1,5 @@
 package com.TS.FLTS.ui
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,6 +21,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,7 +33,7 @@ import com.TS.FLTS.stores.AppModel
 fun RootScreen(model: AppModel) {
     // Onboarding is for the first run only: once the app has been usable,
     // picking a provider without a key in Settings must not replace the screen.
-    var wasConfigured by remember { mutableStateOf(false) }
+    var wasConfigured by rememberSaveable { mutableStateOf(false) }
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         when (val phase = model.phase) {
             AppModel.Phase.Starting -> CenteredMessage(progress = true, title = "Opening library…")
@@ -83,7 +83,6 @@ private fun MainScreen(model: AppModel) {
         LibraryPage(model)
     }
     if (model.showImport) {
-        BackHandler { model.showImport = false }
         ImportSheet(model, onDismiss = { model.showImport = false })
     }
     if (model.showSettings) {
@@ -91,7 +90,7 @@ private fun MainScreen(model: AppModel) {
     }
     // A remembered book from another library (or deleted elsewhere).
     val books = model.library.books
-    LaunchedEffect(books) {
+    LaunchedEffect(model.library.loaded, books) {
         val id = model.selectedBookId
         if (model.library.loaded && id != null && books.none { it.id == id }) model.selectedBookId = null
     }
