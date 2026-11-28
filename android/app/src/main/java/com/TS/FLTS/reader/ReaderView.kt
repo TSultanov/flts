@@ -538,6 +538,15 @@ class ReaderView(context: Context) : View(context) {
         return null
     }
 
+    /// True if `(x, y)` is close enough to a paragraph translate button that
+    /// an off-target tap must not turn the page instead.
+    private fun nearControl(x: Float, y: Float): Boolean {
+        val guard = controlSlop * 2
+        return visibleControlRects().any { (_, rect) ->
+            x >= rect.left - guard && x <= rect.right + guard && y >= rect.top - guard && y <= rect.bottom + guard
+        }
+    }
+
     /// Where a point of a visible page's text sits in this view (for tests).
     fun viewPoint(x: Float, y: Float, page: Int): Pair<Float, Float>? {
         val column = page - spreadStart
@@ -771,7 +780,7 @@ class ReaderView(context: Context) : View(context) {
         // In the margins (not over text), a tap turns the page, as in other readers.
         // A narrow margin is still a finger wide here; words were tried above.
         if (x > width - max(marginRight, dp(26f))) return nextSpread()
-        if (x < marginLeft - 2 * controlSlop - controlSize) return previousSpread()
+        if (x < max(marginLeft, dp(26f)) && !nearControl(x, y)) return previousSpread()
         selectWord(x, y)
     }
 

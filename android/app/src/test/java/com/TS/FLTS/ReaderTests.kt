@@ -372,6 +372,46 @@ class ReaderViewTests {
     }
 
     @Test
+    fun leftMarginTapTurnsBackWithoutConflictingWithTranslateButton() {
+        fun tap(view: ReaderView, x: Float, y: Float) {
+            val down = android.os.SystemClock.uptimeMillis()
+            for (action in listOf(android.view.MotionEvent.ACTION_DOWN, android.view.MotionEvent.ACTION_UP)) {
+                val event = android.view.MotionEvent.obtain(down, down + 10, action, x, y, 0)
+                view.dispatchTouchEvent(event)
+                event.recycle()
+            }
+        }
+
+        // Phone-sized viewport: tapping the left margin turns back when clear of words/controls.
+        val translatedParagraphs = (0 until 30).associateWith {
+            paragraph(it, List(25) { "hola mundo" }.joinToString(" "), translated = true)
+        }
+        val phone = open(null, translatedParagraphs, width = 400, height = 760)
+        phone.go(1, animated = false)
+        assertEquals(1, phone.spreadStart)
+        tap(phone, 6f, phone.height - 8f)
+        assertEquals(0, phone.spreadStart)
+
+        // With an untranslated paragraph button on page 1, tapping it or just beside it must not turn back.
+        val mixed = (0 until 30).associateWith {
+            paragraph(it, List(25) { "hola mundo" }.joinToString(" "), translated = false)
+        }
+        val withControls = open(null, mixed, width = 400, height = 760)
+        val recorder = Recorder()
+        withControls.listener = recorder
+        withControls.go(1, animated = false)
+        val controlRect = withControls.visibleControlRects().first().second
+        val nearMissY = controlRect.bottom + 15f
+        tap(withControls, 6f, nearMissY)
+        assertEquals(1, withControls.spreadStart)
+        assertEquals(null, recorder.translated)
+
+        tap(withControls, controlRect.centerX(), controlRect.centerY())
+        assertEquals(1, withControls.spreadStart)
+        assertEquals(withControls.visibleControlRects().first().first to true, recorder.translated)
+    }
+
+    @Test
     fun detachingCancelsPendingFullLayout() {
         val activity = org.robolectric.Robolectric.buildActivity(android.app.Activity::class.java).setup().get()
         val container = android.widget.FrameLayout(activity)
