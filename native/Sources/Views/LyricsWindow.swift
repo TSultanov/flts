@@ -67,28 +67,12 @@ private struct NowPlayingCard: View {
     var body: some View {
         let lyrics = model.lyrics
         let np = lyrics.nowPlaying
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            HStack(spacing: 12) {
-                Image(systemName: np?.state == .playing ? "play.circle.fill" : "pause.circle")
-                    .font(.largeTitle)
-                    .foregroundStyle(.tint)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(np?.name ?? "Spotify").font(.headline).lineLimit(1)
-                    Text([np?.artist, np?.album].compactMap { $0 }.joined(separator: " — "))
-                        .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                    if let duration = np?.durationMs, duration > 0, let pos = lyrics.position(at: context.date) {
-                        HStack {
-                            ProgressView(value: Double(pos), total: Double(duration))
-                                .progressViewStyle(.linear)
-                            Text("\(Self.time(pos)) / \(Self.time(duration))")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                Spacer()
-                TranslationBadge(phase: lyrics.phase)
+        if np?.state == .playing {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                card(now: context.date)
             }
+        } else {
+            card(now: lyrics.receivedAt)
         }
         if model.config.config?.spotifyShowNextTrack == true, let next = upNext {
             HStack {
@@ -97,6 +81,32 @@ private struct NowPlayingCard: View {
                 Spacer()
             }
             .padding(.top, 6)
+        }
+    }
+
+    private func card(now: Date) -> some View {
+        let lyrics = model.lyrics
+        let np = lyrics.nowPlaying
+        return HStack(spacing: 12) {
+            Image(systemName: np?.state == .playing ? "play.circle.fill" : "pause.circle")
+                .font(.largeTitle)
+                .foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(np?.name ?? "Spotify").font(.headline).lineLimit(1)
+                Text([np?.artist, np?.album].compactMap { $0 }.joined(separator: " — "))
+                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                if let duration = np?.durationMs, duration > 0, let pos = lyrics.position(at: now) {
+                    HStack {
+                        ProgressView(value: Double(pos), total: Double(duration))
+                            .progressViewStyle(.linear)
+                        Text("\(Self.time(pos)) / \(Self.time(duration))")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Spacer()
+            TranslationBadge(phase: lyrics.phase)
         }
     }
 
@@ -154,30 +164,37 @@ private struct LyricsList: View {
     var body: some View {
         let store = model.lyrics
         ScrollViewReader { proxy in
-            TimelineView(.periodic(from: .now, by: 0.25)) { context in
-                let current = store.currentLine(at: store.position(at: context.date))
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 14) {
-                        ForEach(Array(lyrics.lines.enumerated()), id: \.offset) { index, line in
-                            LyricsLineView(
-                                line: line,
-                                translation: translation(at: index),
-                                isCurrent: index == current,
-                                // Plain lyrics have no current line; dimming them all reads as disabled.
-                                dimOthers: lyrics.synced
-                            )
-                            .id(index)
-                        }
-                    }
-                    .scrollTargetLayout()
-                    .padding()
+            if lyrics.synced && store.nowPlaying?.state == .playing {
+                TimelineView(.periodic(from: .now, by: 0.25)) { context in
+                    listContent(proxy: proxy, current: store.currentLine(at: store.position(at: context.date)))
                 }
-                .onScrollTargetVisibilityChange(idType: Int.self) { ids in visible = ids.sorted() }
-                .onChange(of: current) { _, line in
-                    guard let line, !inMiddleHalf(line) else { return }
-                    withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(line, anchor: .center) }
+            } else {
+                listContent(proxy: proxy, current: store.currentLine(at: store.position(at: store.receivedAt)))
+            }
+        }
+    }
+
+    private func listContent(proxy: ScrollViewProxy, current: Int?) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 14) {
+                ForEach(Array(lyrics.lines.enumerated()), id: \.offset) { index, line in
+                    LyricsLineView(
+                        line: line,
+                        translation: translation(at: index),
+                        isCurrent: index == current,
+                        // Plain lyrics have no current line; dimming them all reads as disabled.
+                        dimOthers: lyrics.synced
+                    )
+                    .id(index)
                 }
             }
+            .scrollTargetLayout()
+            .padding()
+        }
+        .onScrollTargetVisibilityChange(idType: Int.self) { ids in visible = ids.sorted() }
+        .onChange(of: current) { _, line in
+            guard let line, !inMiddleHalf(line) else { return }
+            withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(line, anchor: .center) }
         }
     }
 
@@ -214,7 +231,7 @@ private struct LyricsLineView: View {
                         .foregroundStyle(.tint)
                 }
                 if let glosses = translation?.glosses, !glosses.isEmpty {
-                    ForEach(glosses, id: \.self) { g in
+                    ForEach(Array(glosses.enumerated()), id: \.offset) { _, g in
                         Text(g.note.isEmpty ? "\(g.fragment) — \(g.gloss)" : "\(g.fragment) — \(g.gloss) (\(g.note))")
                             .font(.caption)
                             .foregroundStyle(isCurrent ? .primary : .secondary)

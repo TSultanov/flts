@@ -32,6 +32,9 @@ final class LyricsStore: CoreBound {
 
     private let events: EventHub
     private var core: (any CoreService)?
+    private var desiredWatching = false
+    private var watcherTransitioning = false
+    private var loadGeneration = 0
 
     init(events: EventHub) {
         self.events = events
@@ -60,23 +63,39 @@ final class LyricsStore: CoreBound {
     }
 
     func start() async {
-        guard let core, !watching else { return }
-        do {
-            try await core.startSpotifyWatcher()
-            watching = true
-            if let np = (try? await core.getNowPlaying()) ?? nil {
-                apply(np)
-            }
-            await refreshSpotifyStatus()
-        } catch {
-            self.error = error.userMessage
-        }
+        desiredWatching = true
+        await reconcileWatcher()
     }
 
     func stop() async {
-        guard let core, watching else { return }
-        watching = false
-        try? await core.stopSpotifyWatcher()
+        desiredWatching = false
+        await reconcileWatcher()
+    }
+
+    private func reconcileWatcher() async {
+        guard !watcherTransitioning, let core else { return }
+        watcherTransitioning = true
+        defer { watcherTransitioning = false }
+        while desiredWatching != watching {
+            if desiredWatching {
+                do {
+                    try await core.startSpotifyWatcher()
+                    watching = true
+                    if desiredWatching {
+                        if let np = (try? await core.getNowPlaying()) ?? nil {
+                            apply(np)
+                        }
+                        await refreshSpotifyStatus()
+                    }
+                } catch {
+                    self.error = error.userMessage
+                    break
+                }
+            } else {
+                watching = false
+                try? await core.stopSpotifyWatcher()
+            }
+        }
     }
 
     private func apply(_ np: NowPlaying) {
@@ -93,10 +112,16 @@ final class LyricsStore: CoreBound {
     }
 
     func loadTrack() async {
+        loadGeneration += 1
+        let gen = loadGeneration
         guard let core, let trackId = nowPlaying?.trackId, !targetLanguage.isEmpty else { return }
+        let lang = targetLanguage
+        let m = model
         do {
-            let state = try await core.getTrackLyricsState(trackId: trackId, targetLang: targetLanguage, model: model)
-            guard trackId == nowPlaying?.trackId else { return }
+            let state = try await core.getTrackLyricsState(trackId: trackId, targetLang: lang, model: m)
+            guard gen == loadGeneration, trackId == nowPlaying?.trackId, lang == targetLanguage, m == model else {
+                return
+            }
             if let lyrics = state.lyrics {
                 self.lyrics = lyrics
                 lyricsResolved = true
@@ -108,6 +133,7 @@ final class LyricsStore: CoreBound {
                 phase = .translating(bytes: 0)
             }
         } catch {
+            guard gen == loadGeneration, trackId == nowPlaying?.trackId else { return }
             self.error = error.userMessage
         }
     }
@@ -115,9 +141,9 @@ final class LyricsStore: CoreBound {
     /// Playback position now, extrapolated while playing.
     func position(at now: Date) -> Int? {
         guard let np = nowPlaying, let base = np.positionMs else { return nil }
-        guard np.state == .playing else { return base }
+        guard np.state == .playing else { return max(0, base) }
         let elapsed = Int(now.timeIntervalSince(receivedAt) * 1000)
-        return min(base + elapsed, np.durationMs ?? Int.max)
+        return max(0, min(base + elapsed, np.durationMs ?? Int.max))
     }
 
     /// Index of the line playing at `positionMs`, for synced lyrics.
